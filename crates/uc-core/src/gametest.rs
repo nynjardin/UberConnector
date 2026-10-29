@@ -9,10 +9,14 @@
 //!   relayed by EasyTier, unless another VPN's adapter wins).
 //! Each receiver answers by unicast to the packet's source address, as a game
 //! would.
+//!
+//! Between tests, a direct probe goes to each player every second (see
+//! `PingStats`): the ping as the game sees it, through the virtual adapter,
+//! unsmoothed, to spot an unstable link that loses nothing.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -23,6 +27,15 @@ const ROUNDS: u32 = 3;
 const ROUND_GAP: Duration = Duration::from_millis(400);
 /// Answers are awaited this long after the last probe.
 const WAIT: Duration = Duration::from_secs(3);
+/// Continuous ping: one probe per player per second, kept 5 minutes.
+const PING_EVERY: Duration = Duration::from_secs(1);
+const PING_KEEP: usize = 300;
+/// A probe unanswered after this long counts as lost.
+const PING_LOST_MS: u32 = 2000;
+/// Samples shown as a sparkline (the last minute).
+const PING_RECENT: usize = 60;
+/// A spike: this much above the median.
+pub const SPIKE_MS: u32 = 20;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -84,6 +97,64 @@ pub struct GameTest {
     pub relayed: Option<u64>,
 }
 
+/// Ping measured by the continuous probe over the last 5 minutes.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct PingStats {
+    /// Probes sent (and settled), lost among them.
+    pub sent: u32,
+    pub lost: u32,
+    pub min: u32,
+    pub median: u32,
+    pub avg: u32,
+    pub p95: u32,
+    pub max: u32,
+    /// Mean change between two consecutive answers (ms).
+    pub jitter: f32,
+    /// Answers at least `SPIKE_MS` above the median.
+    pub spikes: u32,
+    /// Last minute, oldest first (None: lost).
+    pub recent: Vec<Option<u32>>,
+}
+
+impl PingStats {
+    fn from_samples(samples: &[Option<u32>]) -> Option<Self> {
+        let mut ok: Vec<u32> = samples.iter().flatten().copied().collect();
+        if ok.is_empty() {
+            let n = samples.len() as u32;
+            return (n > 0).then(|| Self { sent: n, lost: n, recent: samples[samples.len().saturating_sub(PING_RECENT)..].to_vec(), ..Default::default() });
+        }
+        let jitter = {
+            let d: Vec<u32> = ok.windows(2).map(|w| w[0].abs_diff(w[1])).collect();
+            if d.is_empty() { 0.0 } else { d.iter().sum::<u32>() as f32 / d.len() as f32 }
+        };
+        ok.sort_unstable();
+        let at = |q: f32| ok[((ok.len() - 1) as f32 * q).round() as usize];
+        let median = at(0.5);
+        Some(Self {
+            sent: samples.len() as u32,
+            lost: (samples.len() - ok.len()) as u32,
+            min: ok[0],
+            median,
+            avg: (ok.iter().map(|&v| v as u64).sum::<u64>() / ok.len() as u64) as u32,
+            p95: at(0.95),
+            max: ok[ok.len() - 1],
+            jitter,
+            spikes: ok.iter().filter(|&&v| v >= median + SPIKE_MS).count() as u32,
+            recent: samples[samples.len().saturating_sub(PING_RECENT)..].to_vec(),
+        })
+    }
+}
+
+/// Continuous ping state: probes are tagged with `nonce`, and `t` (ms since
+/// `started`) identifies each round.
+struct Monitor {
+    nonce: u64,
+    started: Instant,
+    targets: Vec<(String, Ipv4Addr)>,
+    /// Player id -> (probe time, round trip), oldest first.
+    hist: HashMap<String, VecDeque<(u32, Option<u32>)>>,
+}
+
 struct Run {
     nonce: u64,
     started: Instant,
@@ -105,6 +176,8 @@ pub struct GameNet {
     /// has set up the adapter, seconds after the session starts.
     bound: tokio::sync::Mutex<Option<Arc<UdpSocket>>>,
     rivals: Mutex<Vec<String>>,
+    mon: Mutex<Monitor>,
+    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 /// UDP port of the test, shared by the salon's members (not the chat's).
@@ -131,9 +204,69 @@ impl GameNet {
             run: Mutex::new(None),
             bound: Default::default(),
             rivals: Mutex::new(vec![]),
+            mon: Mutex::new(Monitor { nonce: rand::random(), started: Instant::now(), targets: vec![], hist: HashMap::new() }),
+            tasks: Mutex::new(vec![]),
         });
-        tokio::spawn(net.clone().recv_loop(net.sock.clone()));
+        net.spawn(net.clone().recv_loop(net.sock.clone()));
+        net.spawn(net.clone().ping_loop());
         Ok(net)
+    }
+
+    fn spawn(&self, task: impl Future<Output = ()> + Send + 'static) {
+        self.tasks.lock().unwrap().push(tokio::spawn(task).abort_handle());
+    }
+
+    /// Ends the background tasks (they hold the sockets, hence the port).
+    pub fn stop(&self) {
+        for t in self.tasks.lock().unwrap().drain(..) {
+            t.abort();
+        }
+    }
+
+    /// Players to ping continuously (id, virtual IP).
+    pub fn set_ping_targets(&self, targets: Vec<(String, Ipv4Addr)>) {
+        let mut m = self.mon.lock().unwrap();
+        m.hist.retain(|id, _| targets.iter().any(|(t, _)| t == id));
+        m.targets = targets;
+    }
+
+    /// Ping per player id over the last 5 minutes (settled probes only).
+    pub fn ping_stats(&self) -> HashMap<String, PingStats> {
+        let m = self.mon.lock().unwrap();
+        let now = m.started.elapsed().as_millis() as u32;
+        m.hist
+            .iter()
+            .filter_map(|(id, h)| {
+                let settled: Vec<Option<u32>> =
+                    h.iter().filter(|(t, rtt)| rtt.is_some() || now.saturating_sub(*t) >= PING_LOST_MS).map(|(_, rtt)| *rtt).collect();
+                Some((id.clone(), PingStats::from_samples(&settled)?))
+            })
+            .collect()
+    }
+
+    async fn ping_loop(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(PING_EVERY);
+        loop {
+            tick.tick().await;
+            let (nonce, t, targets) = {
+                let mut m = self.mon.lock().unwrap();
+                let t = m.started.elapsed().as_millis() as u32;
+                let targets = m.targets.clone();
+                for (id, _) in &targets {
+                    let h = m.hist.entry(id.clone()).or_default();
+                    h.push_back((t, None));
+                    if h.len() > PING_KEEP {
+                        h.pop_front();
+                    }
+                }
+                (m.nonce, t, targets)
+            };
+            // A "direct" probe: members on older versions answer it too.
+            let pkt = self.wire(Kind::Direct, nonce, false, t);
+            for (_, vip) in &targets {
+                let _ = self.sock.send_to(&pkt, (*vip, self.port)).await;
+            }
+        }
     }
 
     async fn bound_socket(self: &Arc<Self>) -> Option<Arc<UdpSocket>> {
@@ -142,7 +275,7 @@ impl GameNet {
             let s = UdpSocket::bind((self.my_vip, 0)).await.ok().filter(|s| s.set_broadcast(true).is_ok())?;
             let s = Arc::new(s);
             // Answers to its broadcasts come back to it.
-            tokio::spawn(self.clone().recv_loop(s.clone()));
+            self.spawn(self.clone().recv_loop(s.clone()));
             *bound = Some(s);
         }
         bound.clone()
@@ -231,6 +364,16 @@ impl GameNet {
                 let _ = sock.send_to(&answer, from).await;
                 continue;
             }
+            {
+                let mut m = self.mon.lock().unwrap();
+                if w.nonce == m.nonce {
+                    let rtt = (m.started.elapsed().as_millis() as u32).saturating_sub(w.t);
+                    if let Some(s) = m.hist.get_mut(&w.id).and_then(|h| h.iter_mut().find(|(t, _)| *t == w.t)) {
+                        s.1.get_or_insert(rtt);
+                    }
+                    continue;
+                }
+            }
             let mut run = self.run.lock().unwrap();
             let Some(r) = run.as_mut().filter(|r| r.nonce == w.nonce) else { continue };
             let ms = (r.started.elapsed().as_millis() as u32).saturating_sub(w.t);
@@ -275,5 +418,30 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(600)).await;
         assert!(a.snapshot().unwrap().results[0].direct_ms.is_none());
         drop(c);
+    }
+
+    /// The continuous probe measures each target's ping.
+    #[tokio::test]
+    async fn continuous_ping() {
+        let port = 47_312;
+        let a_ip = Ipv4Addr::new(127, 0, 0, 1);
+        let b_ip = Ipv4Addr::new(127, 0, 0, 2);
+        let a = GameNet::start(a_ip, port, "salon", "aaaa", a_ip).await.unwrap();
+        let b = GameNet::start(b_ip, port, "salon", "bbbb", b_ip).await.unwrap();
+        a.set_ping_targets(vec![("bbbb".into(), b_ip)]);
+        tokio::time::sleep(Duration::from_millis(2300)).await;
+        let s = a.ping_stats().remove("bbbb").unwrap();
+        assert!(s.sent >= 1 && s.lost == 0, "{s:?}");
+        assert_eq!(s.recent.len() as u32, s.sent);
+        b.stop();
+        a.stop();
+    }
+
+    #[test]
+    fn stats_from_samples() {
+        let s = PingStats::from_samples(&[Some(10), Some(12), None, Some(50), Some(10)]).unwrap();
+        assert_eq!((s.sent, s.lost, s.min, s.max, s.median, s.spikes), (5, 1, 10, 50, 12, 1));
+        assert!((s.jitter - (2.0 + 38.0 + 40.0) / 3.0).abs() < 0.01);
+        assert!(PingStats::from_samples(&[]).is_none());
     }
 }

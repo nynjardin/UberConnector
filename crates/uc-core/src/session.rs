@@ -96,6 +96,9 @@ pub struct Member {
     /// Relayed: the member our traffic to this one goes through ("" if direct).
     #[serde(default)]
     pub relay_via: String,
+    /// Ping measured through the virtual adapter (game mode only).
+    #[serde(default)]
+    pub ping: Option<crate::gametest::PingStats>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -128,6 +131,10 @@ pub struct Status {
     /// Our NAT, from STUN: "cone", "symmetric", or "" (unknown).
     #[serde(default)]
     pub nat: String,
+    /// Each player's path as it changes (direct, punched, relayed...), with
+    /// the local time to compare with the other players' diagnostics.
+    #[serde(default)]
+    pub path_log: Vec<String>,
 }
 
 pub struct Session {
@@ -194,6 +201,16 @@ fn push_event(s: &mut Status, t0: Instant, msg: String) {
     if n > 8 {
         s.events.drain(..n - 8);
     }
+}
+
+/// Most recent path changes kept in `Status::path_log`.
+const PATH_LOG_MAX: usize = 60;
+
+/// Local wall-clock time "HH:MM:SS".
+fn local_hms() -> String {
+    let mut t = unsafe { std::mem::zeroed::<windows_sys::Win32::Foundation::SYSTEMTIME>() };
+    unsafe { windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut t) };
+    format!("{:02}:{:02}:{:02}", t.wHour, t.wMinute, t.wSecond)
 }
 
 /// Records a milestone once (`key` identifies it).
@@ -612,6 +629,8 @@ async fn run(
     // Member id -> id of the member relaying our traffic to it (EasyTier routes).
     let mut relayed_by: HashMap<String, String> = HashMap::new();
     let mut route_tick: u64 = 0;
+    // Member id -> (name, path label): logs path changes.
+    let mut paths: HashMap<String, (String, String)> = HashMap::new();
     // Member ids EasyTier is linked with (from its peer list).
     let mut et_linked: HashSet<String> = HashSet::new();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -883,11 +902,11 @@ async fn run(
                         } else {
                             relayed_by.get(&id).cloned().unwrap_or_default()
                         };
-                        Member { id, chat: chat_up, name, avatar, vip: e.ipv4, latency_ms: e.lat_ms, loss: e.loss_rate, path, nat: e.nat_type, relay_via }
+                        Member { id, chat: chat_up, name, avatar, vip: e.ipv4, latency_ms: e.lat_ms, loss: e.loss_rate, path, nat: e.nat_type, relay_via, ping: None }
                     }).collect::<Vec<_>>();
                     // Relaying member: by id above, shown by its live name.
                     let names: HashMap<String, String> = members.iter().map(|m| (m.id.clone(), m.name.clone())).collect();
-                    let members: Vec<Member> = members
+                    let mut members: Vec<Member> = members
                         .into_iter()
                         .map(|mut m| {
                             if let Some(n) = names.get(&m.relay_via) {
@@ -896,6 +915,35 @@ async fn run(
                             m
                         })
                         .collect();
+                    if let Some(g) = &game_net {
+                        g.set_ping_targets(
+                            members
+                                .iter()
+                                .filter(|m| m.path != "vous" && !m.id.is_empty())
+                                .filter_map(|m| Some((m.id.clone(), m.vip.parse().ok()?)))
+                                .collect(),
+                        );
+                        let mut stats = g.ping_stats();
+                        for m in &mut members {
+                            m.ping = stats.remove(&m.id);
+                        }
+                    }
+                    let mut changes = vec![];
+                    for m in members.iter().filter(|m| m.path != "vous" && !m.id.is_empty()) {
+                        let label = if m.relay_via.is_empty() { m.path.clone() } else { format!("{} par {}", m.path, m.relay_via) };
+                        match paths.insert(m.id.clone(), (m.name.clone(), label.clone())) {
+                            Some((_, old)) if old == label => {}
+                            Some((_, old)) => changes.push(format!("{} : {old} → {label}", m.name)),
+                            None => changes.push(format!("{} : {label}", m.name)),
+                        }
+                    }
+                    paths.retain(|id, (name, _)| {
+                        let here = members.iter().any(|m| &m.id == id);
+                        if !here {
+                            changes.push(format!("{name} : plus de lien"));
+                        }
+                        here
+                    });
                     let game_test = game_net.as_ref().and_then(|g| g.snapshot()).map(|mut t| {
                         t.relayed = _bcast.as_ref().map(|r| r.relayed.load(std::sync::atomic::Ordering::Relaxed));
                         t
@@ -905,6 +953,14 @@ async fn run(
                         if game_test.is_some() {
                             s.game_test = game_test;
                         }
+                        for c in changes {
+                            tracing::info!("chemin : {c}");
+                            s.path_log.push(format!("{} [+{}s] {c}", local_hms(), t0.elapsed().as_secs()));
+                        }
+                        let n = s.path_log.len();
+                        if n > PATH_LOG_MAX {
+                            s.path_log.drain(..n - PATH_LOG_MAX);
+                        }
                     });
                 }
             }
@@ -913,6 +969,9 @@ async fn run(
 
     disc_task.abort();
     dht_check.abort();
+    if let Some(g) = &game_net {
+        g.stop();
+    }
     et.stop().await;
     if let Some(pm) = port_map {
         pm.close().await;

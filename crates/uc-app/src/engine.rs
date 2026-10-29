@@ -561,6 +561,18 @@ impl Engine {
                         m.nat,
                         if m.chat { "oui" } else { "non" }
                     );
+                    if let Some(p) = &m.ping {
+                        let _ = writeln!(
+                            out,
+                            "  ping mesuré (5 min, {} sondes) : min {} · médiane {} · moy {} · 95 % {} · max {} ms · gigue {:.1} ms · pics +{} ms : {} · perdues {}",
+                            p.sent, p.min, p.median, p.avg, p.p95, p.max, p.jitter, uc_core::gametest::SPIKE_MS, p.spikes, p.lost
+                        );
+                        let _ = writeln!(out, "  dernière minute : {}", sparkline(&p.recent));
+                    }
+                }
+                out.push_str("\n== Chemins (heure locale)\n");
+                for l in &st.path_log {
+                    let _ = writeln!(out, "{l}");
                 }
                 if let Some(t) = &st.game_test {
                     out.push_str("\n== Test du réseau de jeu\n");
@@ -1250,6 +1262,18 @@ fn tail(path: &Path, n: usize, keep: impl Fn(&str) -> bool) -> String {
 }
 
 /// "28/10/2026 19:05 UTC".
+/// One block per ping sample ("×" when lost), scaled from 0 to the highest
+/// value, which is written after it.
+fn sparkline(samples: &[Option<u32>]) -> String {
+    const BARS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = samples.iter().flatten().copied().max().unwrap_or(0).max(1);
+    let line: String = samples
+        .iter()
+        .map(|s| s.map_or('×', |v| BARS[(v as usize * (BARS.len() - 1) + max as usize / 2) / max as usize]))
+        .collect();
+    format!("{line} (max {max} ms)")
+}
+
 fn now_text() -> String {
     let secs = now_secs() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));

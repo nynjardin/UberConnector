@@ -160,7 +160,22 @@ function linkNotes(m) {
   }
   if (lossOf(m) >= 5) out.push({ note: "Beaucoup de paquets perdus : saccades probables. Wi-Fi faible ou connexion saturée chez l'un de vous ?", warn: true });
   else if (parseFloat(m.latency_ms) >= 150) out.push({ note: "Ping élevé : les jeux rapides peuvent en souffrir.", warn: true });
+  const p = m.ping;
+  if (p && p.sent > p.lost) {
+    out.push({ note: `Ping mesuré (${p.sent < 120 ? p.sent + " s" : Math.round(p.sent / 60) + " min"}) : ${p.min}–${p.max} ms, médiane ${p.median} · gigue ${p.jitter.toFixed(1)} ms · pics ${p.spikes} · perdus ${p.lost}/${p.sent}` });
+    out.push({ note: `30 dernières s : ${sparkline(p.recent.slice(-30))}` });
+    if (p.jitter >= 10 || p.spikes * 20 >= p.sent - p.lost) {
+      out.push({ note: "Ping instable : les paquets arrivent tous, mais à des délais variables (Wi-Fi, connexion chargée par un téléchargement ou un stream…).", warn: true });
+    }
+  }
   return out;
+}
+
+// One block per ping sample ("×" when lost), scaled to the highest value.
+function sparkline(samples) {
+  const bars = "▁▂▃▄▅▆▇█";
+  const max = Math.max(1, ...samples.filter((v) => v != null));
+  return samples.map((v) => (v == null ? "×" : bars[Math.round((v * 7) / max)])).join("") + ` (max ${max} ms)`;
 }
 
 // How others reach us, with advice when it is fragile.
