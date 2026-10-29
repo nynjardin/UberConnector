@@ -1,0 +1,10 @@
+# Build output
+/target/
+/dist/
+
+# User data: identity private key, salon keys, settings. NEVER publish.
+uc-data/
+
+# EasyTier binaries (downloaded separately, see README) and their logs
+/vendor/
+*.log

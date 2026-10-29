@@ -1,0 +1,22 @@
+[package]
+name = "uberconnector"
+version.workspace = true
+edition = "2024"
+
+# "uberconnector.exe" would clash with the app's "UberConnector.exe" (case-insensitive FS).
+[[bin]]
+name = "uc-helper"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+hex = "0.4.3"
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uc-core = { version = "0.1.0", path = "../uc-core" }
+
+[build-dependencies]
+embed-manifest = "1.5.1"

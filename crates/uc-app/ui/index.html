@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UberConnector</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="7" class="logo-bg"/>
+        <line x1="10" y1="21.5" x2="22" y2="10.5" class="logo-link"/>
+        <circle cx="10" cy="21.5" r="4.2" class="logo-node"/>
+        <circle cx="22" cy="10.5" r="4.2" class="logo-node"/>
+      </svg>
+      <span class="brand-name">UberConnector</span>
+    </div>
+    <div class="topbar-right">
+      <button id="btn-profile" class="profile-chip" title="Modifier mon profil">
+        <span id="me-avatar" class="avatar"></span>
+        <span id="me-name" class="profile-name"></span>
+      </button>
+      <span id="phase-pill" class="pill" data-phase="off">Désactivé</span>
+      <button id="btn-log" class="icon-btn" title="Journal technique du salon" aria-label="Journal technique">
+        <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z M7 9l3 3-3 3 M12 15h5" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" title="Réglages" aria-label="Réglages">
+        <svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4L6.6 11a7.5 7.5 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.8 1.7 1l.4 2.5h4l.4-2.5c.6-.2 1.2-.6 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)" stroke="none"/></svg>
+      </button>
+      <label class="switch" title="Activer / désactiver">
+        <input type="checkbox" id="main-switch">
+        <span class="track"><span class="thumb"></span></span>
+      </label>
+    </div>
+  </header>
+
+  <div id="busy" class="banner info" hidden></div>
+  <div id="banner" class="banner" hidden></div>
+  <div id="update-bar" class="banner info update-bar" hidden>
+    <span id="update-text"></span>
+    <span class="update-actions">
+      <button id="update-notes" class="btn small ghost">Nouveautés</button>
+      <button id="update-go" class="btn small primary">Mettre à jour</button>
+      <button id="update-later" class="icon-btn small" title="Plus tard" aria-label="Plus tard">✕</button>
+    </span>
+  </div>
+
+  <main class="layout" id="layout">
+    <aside class="card side">
+      <div class="side-head">
+        <h2 class="side-title">Salons</h2>
+        <button id="btn-collapse" class="icon-btn small" title="Réduire le volet" aria-label="Réduire le volet">
+          <svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="side-actions">
+        <button id="btn-join" class="btn small" title="Rejoindre un salon avec un code d'invitation">
+          <span class="lbl">Rejoindre</span><span class="ico">↪</span>
+        </button>
+        <button id="btn-create" class="btn small primary" title="Créer un salon">
+          <span class="lbl">Créer</span><span class="ico">+</span>
+        </button>
+      </div>
+      <ul id="salons" class="salons"></ul>
+      <p id="salons-empty" class="muted small side-text">Créez un salon, ou rejoignez-en un avec un code d'invitation.</p>
+    </aside>
+
+    <section class="main">
+      <section class="card grow salon-card">
+        <div id="current-none" class="empty">
+          <p>Créez un salon ou rejoignez-en un avec un code d'invitation.</p>
+        </div>
+        <div id="current" hidden>
+          <div class="current-head">
+            <button id="cur-avatar" class="salon-avatar-btn" title=""></button>
+            <div class="current-title">
+              <h1 id="cur-name" class="salon-title"></h1>
+              <div class="invite-row">
+                <span class="muted small">Invitation</span>
+                <span id="cur-invite" class="invite mono"></span>
+                <button id="btn-copy-invite" class="icon-btn small" title="Copier le lien ou le code d'invitation" aria-label="Copier l'invitation">
+                  <svg viewBox="0 0 24 24"><path d="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z" fill="none" stroke-width="2"/></svg>
+                </button>
+              </div>
+            </div>
+            <div class="head-actions">
+              <button id="btn-connect" class="btn small primary">Se connecter</button>
+              <button id="btn-manage" class="icon-btn" title="Gérer le salon" aria-label="Gérer le salon">
+                <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2" stroke="none"/><circle cx="12" cy="12" r="2" stroke="none"/><circle cx="19" cy="12" r="2" stroke="none"/></svg>
+              </button>
+            </div>
+          </div>
+          <div id="key-lost" class="banner inline" hidden>
+            Ce salon a changé de clé sans vous la transmettre (vous n'étiez pas en ligne en même temps qu'un modérateur).
+            Demandez le nouveau code d'invitation à un membre, puis « Rejoindre ».
+          </div>
+
+          <div class="salon-body">
+            <section class="chat">
+              <ol id="chat-log" class="chat-log"></ol>
+              <p id="chat-empty" class="chat-empty muted"></p>
+              <p id="chat-pending" class="chat-pending" hidden><span class="spinner"></span><span id="chat-pending-text"></span></p>
+              <form id="chat-form" class="chat-form">
+                <input id="chat-input" class="input" maxlength="2000" autocomplete="off" placeholder="Écrire un message…">
+                <button class="btn primary" type="submit">Envoyer</button>
+              </form>
+            </section>
+            <aside class="people">
+              <div id="knocks-box" class="knocks-box" hidden>
+                <h2>En attente <span id="knocks-count" class="count"></span></h2>
+                <ul id="knocks" class="player-list"></ul>
+              </div>
+              <h2>Joueurs <span id="count" class="count"></span></h2>
+              <p id="my-net" class="my-net small" hidden></p>
+              <ul id="players" class="player-list"></ul>
+              <p id="players-wait" class="muted small"></p>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section id="game-bar" class="card game-bar" hidden>
+        <span id="mode-spinner" class="spinner" hidden></span>
+        <div class="mode-text">
+          <strong id="mode-title"></strong>
+          <span id="mode-desc" class="muted small"></span>
+        </div>
+        <div class="mode-ip with-copy" id="mode-ip-box">
+          <span class="muted small">Votre IP</span> <span id="cur-ip" class="mono">–</span>
+          <button class="icon-btn small" data-copy="cur-ip" title="Copier votre IP" aria-label="Copier votre IP">
+            <svg viewBox="0 0 24 24"><path d="M8 8V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-3M5 8h9a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2z" fill="none" stroke-width="2"/></svg>
+          </button>
+        </div>
+        <button id="btn-gametest" class="btn small" title="Vérifie que le jeu pourra joindre les autres joueurs, sans lancer de jeu">Tester le réseau de jeu</button>
+        <button id="btn-game" class="btn small"></button>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="ask" class="modal">
+    <form id="ask-form" method="dialog">
+      <h2 id="ask-title"></h2>
+      <p id="ask-text" class="muted"></p>
+      <input id="ask-input" class="input" autocomplete="off" spellcheck="false">
+      <p id="ask-busy" class="busy-line" hidden><span class="spinner"></span><span id="ask-busy-text"></span></p>
+      <p id="ask-error" class="field-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="ask-cancel" class="btn ghost">Annuler</button>
+        <button type="submit" id="ask-ok" class="btn primary">OK</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="picker" class="modal wide">
+    <form id="picker-form" method="dialog">
+      <h2 id="picker-title">Avatar</h2>
+      <div class="picker-top">
+        <span id="pk-preview" class="avatar xl"></span>
+        <div class="picker-image">
+          <button type="button" id="pk-import" class="btn">Importer une image…</button>
+          <small class="muted">PNG, JPEG ou WebP. Recadrée en carré et réduite automatiquement.</small>
+          <input type="file" id="pk-file" accept="image/png,image/jpeg,image/webp" hidden>
+        </div>
+      </div>
+      <div id="pk-emojis" class="emoji-grid"></div>
+      <div id="pk-colors" class="color-row"></div>
+      <p id="picker-error" class="field-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="pk-reset" class="btn ghost" hidden>Par défaut</button>
+        <span class="spacer"></span>
+        <button type="button" id="picker-cancel" class="btn ghost">Annuler</button>
+        <button type="submit" id="picker-ok" class="btn primary">Valider</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="profile" class="modal wide">
+    <form id="profile-form" method="dialog">
+      <h2>Mon profil</h2>
+      <div class="profile-top">
+        <button type="button" id="pf-avatar" class="avatar-edit" title="Changer d'avatar">
+          <span id="pf-preview" class="avatar xl"></span>
+          <span class="avatar-edit-label">Changer</span>
+        </button>
+        <label class="field grow">
+          <span>Pseudo</span>
+          <input id="pf-name" class="input" maxlength="24" required>
+          <small class="muted">Visible par les membres de vos salons, mis à jour en direct.</small>
+        </label>
+      </div>
+      <fieldset class="group">
+        <legend>Chat vocal <small class="muted">(bientôt disponible)</small></legend>
+        <label class="check">
+          <input type="checkbox" id="pf-voice-auto">
+          <span>Rejoindre automatiquement le vocal en me connectant à un salon</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="pf-voice-muted">
+          <span>Démarrer avec le micro coupé</span>
+        </label>
+      </fieldset>
+      <p id="profile-error" class="field-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="profile-cancel" class="btn ghost">Annuler</button>
+        <button type="submit" class="btn primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="settings" class="modal">
+    <form id="settings-form" method="dialog">
+      <h2>Réglages</h2>
+      <label class="check">
+        <input type="checkbox" id="set-autostart">
+        <span>Lancer au démarrage de Windows<small class="muted">L'application reprend l'état activé/désactivé et les salons de la dernière fois.</small></span>
+      </label>
+      <label class="check">
+        <input type="checkbox" id="set-update-check">
+        <span>Rechercher les mises à jour automatiquement<small class="muted">Au démarrage puis toutes les 6 heures. Rien n'est installé sans votre accord.</small></span>
+      </label>
+      <p class="muted small version-line">
+        Version <span id="app-version"></span> ·
+        <button type="button" id="btn-check-update" class="link-btn">Vérifier maintenant</button>
+        <span id="update-result"></span>
+      </p>
+      <label class="check">
+        <input type="checkbox" id="set-port-map">
+        <span>Ouvrir automatiquement un port sur la box<small class="muted">Les autres joueurs se connectent alors directement à vous, même quand vos réseaux bloquent la connexion entre eux. Seul le port d'UberConnector est ouvert, et refermé à la déconnexion. Prend effet à la prochaine connexion d'un salon.</small></span>
+      </label>
+      <fieldset class="group">
+        <legend>Notifications Windows</legend>
+        <p class="muted small group-note">Seulement quand la fenêtre d'UberConnector n'est pas au premier plan.</p>
+        <label class="check">
+          <input type="checkbox" id="set-notify-online">
+          <span>Un joueur arrive en ligne dans un de mes salons connectés</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="set-notify-knock">
+          <span>Quelqu'un attend en salle d'attente<small class="muted">Salons à validation que vous modérez.</small></span>
+        </label>
+        <label class="check">
+          <input type="checkbox" id="set-notify-mention">
+          <span>Mon pseudo est cité dans le chat</span>
+        </label>
+      </fieldset>
+      <label class="field">
+        <span>Relais de secours <small class="muted">(un par ligne, optionnel)</small></span>
+        <textarea id="set-relays" class="input mono" rows="3" placeholder="tcp://mon-serveur:11010"></textarea>
+      </label>
+      <p id="settings-error" class="field-error" hidden></p>
+      <div class="actions">
+        <button type="button" id="settings-cancel" class="btn ghost">Annuler</button>
+        <button type="submit" class="btn primary">Enregistrer</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="gametest" class="modal wide">
+    <h2>Test du réseau de jeu <small id="gt-salon" class="muted"></small></h2>
+    <p class="muted small">Envoie des paquets comme le ferait un jeu en réseau local. Les autres joueurs doivent eux aussi être <strong>en jeu</strong> dans ce salon pour répondre.</p>
+    <table class="gt-table">
+      <thead><tr>
+        <th>Joueur</th>
+        <th title="Le jeu peut joindre ce joueur à son IP (parties rejointes par IP)">Direct</th>
+        <th title="Annonce envoyée à toute la plage du salon (10.X.255.255)">Diffusion salon</th>
+        <th title="Annonce à 255.255.255.255 envoyée depuis votre IP 10.x : jeux où l'on choisit son IP (comme Burnout)">Annonce · IP choisie</th>
+        <th title="Annonce à 255.255.255.255 sans IP choisie : Windows choisit la carte réseau (jeux qui ne laissent pas choisir)">Annonce · automatique</th>
+      </tr></thead>
+      <tbody id="gt-rows"></tbody>
+    </table>
+    <p id="gt-empty" class="muted small" hidden>Aucun autre joueur dans le salon pour l'instant.</p>
+    <p id="gt-running" class="busy-line" hidden><span class="spinner"></span>Test en cours…</p>
+    <p id="gt-hint" class="muted small"></p>
+    <div class="actions">
+      <button type="button" id="gt-again" class="btn">Relancer</button>
+      <button type="button" id="gt-close" class="btn primary">Fermer</button>
+    </div>
+  </dialog>
+
+  <dialog id="log" class="modal wide">
+    <h2>Journal technique <small id="log-salon" class="muted"></small></h2>
+    <ol id="events" class="events mono"></ol>
+    <div class="actions">
+      <button type="button" id="log-copy" class="btn" title="Copie l'état de la connexion et les dernières erreurs, à envoyer pour obtenir de l'aide">Copier le diagnostic</button>
+      <button type="button" id="log-close" class="btn">Fermer</button>
+    </div>
+  </dialog>
+
+  <dialog id="bans" class="modal">
+    <h2>Membres bannis</h2>
+    <p class="muted small">Un membre banni ne peut plus se connecter : la clé du salon et le code d'invitation ont été changés. Le débannir ne lui redonne pas l'accès : il lui faudra le code d'invitation actuel.</p>
+    <ul id="bans-list" class="bans-list"></ul>
+    <p id="bans-empty" class="muted">Personne n'est banni.</p>
+    <p id="bans-busy" class="busy-line" hidden><span class="spinner"></span>Levée du bannissement en cours, cela peut prendre jusqu'à 30 secondes…</p>
+    <p id="bans-error" class="field-error" hidden></p>
+    <div class="actions">
+      <button type="button" id="bans-close" class="btn">Fermer</button>
+    </div>
+  </dialog>
+
+  <div id="menu" class="menu" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>
