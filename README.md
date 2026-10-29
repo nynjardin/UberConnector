@@ -88,3 +88,17 @@ Diagnostic tools (`cargo run -p uc-core --example <name>`):
 
 In `uc-data\`, next to the executable: the identity (private key), the salon
 keys and the settings. **Never publish this folder.**
+
+## License
+
+UberConnector is free software under the
+[GNU General Public License v3.0](LICENSE): you may use, modify and
+redistribute it, as long as your version stays under the same license with
+its source code available.
+
+Additional term (GPL v3, section 7(b)): any copy or modified version must
+keep the attribution **"Based on UberConnector by PaPe (nynjardin) —
+https://github.com/nynjardin/UberConnector"**. See [NOTICE.txt](NOTICE.txt).
+
+The release zip also ships [EasyTier](https://github.com/EasyTier/EasyTier),
+under the [LGPL v3](licenses/LGPL-3.0.txt).

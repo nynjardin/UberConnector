@@ -63,6 +63,11 @@ Command line (advanced, administrator terminal):
   uc-helper new  --salon "Name" --name Nick [--no-lan] [--relay tcp://host:11010]
   uc-helper join CODE --name Nick [--ip 10.21.0.10]
 
+License: GNU GPL v3 (LICENSE.txt), with an attribution term (NOTICE.txt).
+Free to use, modify and share, as long as it stays under the same license
+and keeps the mention "Based on UberConnector by PaPe (nynjardin)".
+EasyTier, in the easytier folder, is under the LGPL v3.
+
 Files: uc-data\ folder (settings, salons, uc-helper.log, logs\).
 IMPORTANT: identity.json holds your personal key. If you lose it, you lose
 the ownership of your salons. Back it up, and never share it.

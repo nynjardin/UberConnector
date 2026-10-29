@@ -1,6 +1,7 @@
 [package]
 name = "uberconnector"
 version.workspace = true
+license.workspace = true
 edition = "2024"
 
 # "uberconnector.exe" would clash with the app's "UberConnector.exe" (case-insensitive FS).

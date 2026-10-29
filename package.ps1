@@ -21,6 +21,10 @@ foreach ($f in "easytier-core.exe", "easytier-cli.exe", "wintun.dll", "Packet.dl
     Copy-Item (Join-Path $et $f) "$out\easytier"
 }
 Copy-Item (Join-Path $root "README.txt") $out
+# Licences: ours (GPL-3.0 + attribution term) and EasyTier's (LGPL-3.0).
+Copy-Item (Join-Path $root "LICENSE") "$out\LICENSE.txt"
+Copy-Item (Join-Path $root "NOTICE.txt") $out
+Copy-Item (Join-Path $root "licenses\LGPL-3.0.txt") "$out\easytier\LICENSE-LGPL-3.0.txt"
 
 $version = (Select-String -Path (Join-Path $root "Cargo.toml") -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 $zip = Join-Path $root "dist\UberConnector-$version.zip"

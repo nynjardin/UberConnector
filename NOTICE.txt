@@ -1,0 +1,45 @@
+UberConnector
+Copyright (C) 2026 PaPe (nynjardin)
+https://github.com/nynjardin/UberConnector
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU General Public License, version 3, as published
+by the Free Software Foundation (see LICENSE).
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+more details.
+
+
+Additional term (GNU GPL version 3, section 7(b))
+--------------------------------------------------
+
+Anyone conveying this program, a modified version of it, or a work based on
+it must preserve the following author attribution, in the source code and
+in the Appropriate Legal Notices displayed by the program (for example its
+"About" information or its documentation):
+
+    Based on UberConnector by PaPe (nynjardin)
+    https://github.com/nynjardin/UberConnector
+
+Modified versions must also be marked as changed from the original, as
+section 5(a) of the license already requires, so that they are not mistaken
+for the original program.
+
+
+Third-party components shipped with the binary release
+------------------------------------------------------
+
+The "easytier" folder of the release zip contains, unmodified:
+
+- EasyTier (easytier-core.exe, easytier-cli.exe),
+  licensed under the GNU Lesser General Public License version 3
+  (see licenses/LGPL-3.0.txt, which refers to LICENSE).
+  Source code: https://github.com/EasyTier/EasyTier
+
+- The components EasyTier ships with (wintun.dll, WinDivert64.sys,
+  Packet.dll), each under its own license, as distributed by EasyTier.
+
+The Rust libraries this program is built from keep their own licenses
+(MIT, Apache-2.0 and similar permissive licenses), listed in Cargo.lock.
