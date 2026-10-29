@@ -160,22 +160,58 @@ function linkNotes(m) {
   }
   if (lossOf(m) >= 5) out.push({ note: "Beaucoup de paquets perdus : saccades probables. Wi-Fi faible ou connexion saturée chez l'un de vous ?", warn: true });
   else if (parseFloat(m.latency_ms) >= 150) out.push({ note: "Ping élevé : les jeux rapides peuvent en souffrir.", warn: true });
-  const p = m.ping;
-  if (p && p.sent > p.lost) {
-    out.push({ note: `Ping mesuré (${p.sent < 120 ? p.sent + " s" : Math.round(p.sent / 60) + " min"}) : ${p.min}–${p.max} ms, médiane ${p.median} · gigue ${p.jitter.toFixed(1)} ms · pics ${p.spikes} · perdus ${p.lost}/${p.sent}` });
-    out.push({ note: `30 dernières s : ${sparkline(p.recent.slice(-30))}` });
-    if (p.jitter >= 10 || p.spikes * 20 >= p.sent - p.lost) {
-      out.push({ note: "Ping instable : les paquets arrivent tous, mais à des délais variables (Wi-Fi, connexion chargée par un téléchargement ou un stream…).", warn: true });
-    }
-  }
   return out;
 }
 
-// One block per ping sample ("×" when lost), scaled to the highest value.
-function sparkline(samples) {
-  const bars = "▁▂▃▄▅▆▇█";
-  const max = Math.max(1, ...samples.filter((v) => v != null));
-  return samples.map((v) => (v == null ? "×" : bars[Math.round((v * 7) / max)])).join("") + ` (max ${max} ms)`;
+// Debug: live ping graph of the last minute, then the 5-minute figures.
+function renderPing(node, p) {
+  if (!p) {
+    node.replaceChildren(el("div", "menu-note", "Ping mesuré : en attente (mode jeu, quelques secondes après la connexion)."));
+    return;
+  }
+  const W = 240, H = 64;
+  const recent = p.recent;
+  const got = recent.filter((v) => v != null);
+  const top = Math.max(20, Math.ceil(Math.max(0, ...got) * 1.15));
+  // Newest on the right edge, one step per second.
+  const x = (i) => W - (recent.length - 1 - i) * (W / 59);
+  const y = (v) => H - 2 - (v / top) * (H - 4);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.classList.add("ping-chart");
+  const add = (tag, attrs) => {
+    const e = document.createElementNS(ns, tag);
+    for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+    svg.append(e);
+  };
+  for (let i = 1; i < 4; i++) add("line", { class: "grid", x1: 0, x2: W, y1: (H * i) / 4, y2: (H * i) / 4 });
+  for (let i = 1; i < 6; i++) add("line", { class: "grid", y1: 0, y2: H, x1: (W * i) / 6, x2: (W * i) / 6 });
+  let d = "";
+  recent.forEach((v, i) => {
+    if (v == null) {
+      add("line", { class: "lost", x1: x(i), x2: x(i), y1: 0, y2: H });
+      d += " ";
+    } else d += `${d.endsWith(" ") || !d ? "M" : "L"}${x(i).toFixed(1)},${y(v).toFixed(1)}`;
+  });
+  add("path", { class: "line", d: d.trim() });
+  const box = el("div", "ping-box");
+  box.append(svg, el("span", "ping-top", `${top} ms`), el("span", "ping-span", "60 s"));
+  // The warning looks at the last minute only, so it clears once the link is steady.
+  const jit = got.length > 1 ? got.slice(1).reduce((a, v, i) => a + Math.abs(v - got[i]), 0) / (got.length - 1) : 0;
+  const med = [...got].sort((a, b) => a - b)[Math.floor(got.length / 2)] ?? 0;
+  const spikes = got.filter((v) => v >= med + 20).length;
+  const lost = recent.length - got.length;
+  const out = [
+    box,
+    el("div", "menu-note", `Dernière minute : ${got.length ? `${Math.min(...got)}–${Math.max(...got)} ms, médiane ${med}` : "aucune réponse"} · gigue ${jit.toFixed(1)} ms · perdus ${lost}`),
+    el("div", "menu-note", `5 min : ${p.min}–${p.max} ms, médiane ${p.median} · gigue ${p.jitter.toFixed(1)} ms · pics ${p.spikes} · perdus ${p.lost}/${p.sent}`),
+  ];
+  if (got.length >= 10 && (jit >= 10 || spikes * 20 >= got.length)) {
+    out.push(el("div", "menu-note warn", "Ping instable : les paquets arrivent tous, mais à des délais variables (Wi-Fi, connexion chargée par un téléchargement ou un stream…)."));
+  }
+  node.replaceChildren(...out);
 }
 
 // How others reach us, with advice when it is fragile.
@@ -200,6 +236,7 @@ function select(id) {
 
 function render(s) {
   state = s;
+  refreshMenu();
   pruneChats(s);
   const connected = new Set(s.settings.connected);
   if (!s.salons.some((x) => x.id === selected)) {
@@ -474,12 +511,24 @@ $("gt-close").addEventListener("click", () => $("gametest").close());
 
 // ---- Popup menu ----
 const menu = $("menu");
+// Menu parts redrawn on each state update while the menu is open.
+let menuLive = [];
+function refreshMenu() {
+  if (!menu.hidden) for (const f of menuLive) f();
+}
 function showMenu(event, items) {
+  menuLive = [];
   menu.replaceChildren(
     ...items.map((it) => {
       if (it === "sep") return el("hr");
       if (it.title) return el("div", "menu-title", it.title);
       if (it.note) return el("div", "menu-note" + (it.warn ? " warn" : ""), it.note);
+      if (it.ping) {
+        const node = el("div", "menu-ping");
+        renderPing(node, it.ping());
+        menuLive.push(() => renderPing(node, it.ping()));
+        return node;
+      }
       const b = el("button", it.danger ? "danger" : "", it.label);
       b.onclick = () => { hideMenu(); it.run(); };
       return b;
@@ -502,6 +551,9 @@ function playerMenu(event, salon, m, me) {
     for (const x of warn.bannedIn) items.push({ title: `⛔ Banni de « ${x.name} »` });
     if (warn.noob) items.push({ title: "Noob : rencontré il y a moins de 3 jours" });
     items.push(...linkNotes(m));
+    if (state.settings.debug) {
+      items.push({ ping: () => state.statuses[salon.id]?.members.find((x) => x.id === m.id)?.ping });
+    }
   }
   items.push({ label: `Copier l'IP (${m.vip})`, run: () => copy(m.vip) });
   const isOwner = m.id === salon.owner_id;
@@ -1031,6 +1083,7 @@ $("btn-settings").addEventListener("click", () => {
   $("set-notify-online").checked = s.notify_online;
   $("set-notify-knock").checked = s.notify_knock;
   $("set-notify-mention").checked = s.notify_mention;
+  $("set-debug").checked = s.debug;
   $("set-relays").value = s.relays.join("\n");
   $("settings-error").hidden = true;
   dlg.showModal();
@@ -1046,6 +1099,7 @@ $("settings-form").addEventListener("submit", async (e) => {
     notify_online: $("set-notify-online").checked,
     notify_knock: $("set-notify-knock").checked,
     notify_mention: $("set-notify-mention").checked,
+    debug: $("set-debug").checked,
     relays: $("set-relays").value.split("\n").map((r) => r.trim()).filter(Boolean),
   };
   try {

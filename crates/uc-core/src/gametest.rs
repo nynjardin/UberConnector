@@ -32,6 +32,8 @@ const PING_EVERY: Duration = Duration::from_secs(1);
 const PING_KEEP: usize = 300;
 /// A probe unanswered after this long counts as lost.
 const PING_LOST_MS: u32 = 2000;
+/// Measured from this long after a player's first answer.
+const PING_WARMUP_MS: u32 = 5000;
 /// Samples shown as a sparkline (the last minute).
 const PING_RECENT: usize = 60;
 /// A spike: this much above the median.
@@ -153,6 +155,8 @@ struct Monitor {
     targets: Vec<(String, Ipv4Addr)>,
     /// Player id -> (probe time, round trip), oldest first.
     hist: HashMap<String, VecDeque<(u32, Option<u32>)>>,
+    /// Player id -> time of its first answer (see `ping_stats`).
+    answering: HashMap<String, u32>,
 }
 
 struct Run {
@@ -204,7 +208,7 @@ impl GameNet {
             run: Mutex::new(None),
             bound: Default::default(),
             rivals: Mutex::new(vec![]),
-            mon: Mutex::new(Monitor { nonce: rand::random(), started: Instant::now(), targets: vec![], hist: HashMap::new() }),
+            mon: Mutex::new(Monitor { nonce: rand::random(), started: Instant::now(), targets: vec![], hist: HashMap::new(), answering: HashMap::new() }),
             tasks: Mutex::new(vec![]),
         });
         net.spawn(net.clone().recv_loop(net.sock.clone()));
@@ -227,18 +231,25 @@ impl GameNet {
     pub fn set_ping_targets(&self, targets: Vec<(String, Ipv4Addr)>) {
         let mut m = self.mon.lock().unwrap();
         m.hist.retain(|id, _| targets.iter().any(|(t, _)| t == id));
+        m.answering.retain(|id, _| targets.iter().any(|(t, _)| t == id));
         m.targets = targets;
     }
 
-    /// Ping per player id over the last 5 minutes (settled probes only).
+    /// Ping per player id over the last 5 minutes (settled probes only),
+    /// from `PING_WARMUP_MS` after the player first answered: probes sent
+    /// while the link was being set up would only measure the setup.
     pub fn ping_stats(&self) -> HashMap<String, PingStats> {
         let m = self.mon.lock().unwrap();
         let now = m.started.elapsed().as_millis() as u32;
         m.hist
             .iter()
             .filter_map(|(id, h)| {
-                let settled: Vec<Option<u32>> =
-                    h.iter().filter(|(t, rtt)| rtt.is_some() || now.saturating_sub(*t) >= PING_LOST_MS).map(|(_, rtt)| *rtt).collect();
+                let from = m.answering.get(id)? + PING_WARMUP_MS;
+                let settled: Vec<Option<u32>> = h
+                    .iter()
+                    .filter(|(t, rtt)| *t >= from && (rtt.is_some() || now.saturating_sub(*t) >= PING_LOST_MS))
+                    .map(|(_, rtt)| *rtt)
+                    .collect();
                 Some((id.clone(), PingStats::from_samples(&settled)?))
             })
             .collect()
@@ -367,9 +378,14 @@ impl GameNet {
             {
                 let mut m = self.mon.lock().unwrap();
                 if w.nonce == m.nonce {
-                    let rtt = (m.started.elapsed().as_millis() as u32).saturating_sub(w.t);
-                    if let Some(s) = m.hist.get_mut(&w.id).and_then(|h| h.iter_mut().find(|(t, _)| *t == w.t)) {
-                        s.1.get_or_insert(rtt);
+                    let now = m.started.elapsed().as_millis() as u32;
+                    let rtt = now.saturating_sub(w.t);
+                    // Too late: already counted as lost.
+                    if rtt < PING_LOST_MS && m.hist.contains_key(&w.id) {
+                        m.answering.entry(w.id.clone()).or_insert(now);
+                        if let Some(s) = m.hist.get_mut(&w.id).and_then(|h| h.iter_mut().find(|(t, _)| *t == w.t)) {
+                            s.1.get_or_insert(rtt);
+                        }
                     }
                     continue;
                 }
@@ -420,7 +436,7 @@ mod tests {
         drop(c);
     }
 
-    /// The continuous probe measures each target's ping.
+    /// The continuous probe measures each target's ping, once warmed up.
     #[tokio::test]
     async fn continuous_ping() {
         let port = 47_312;
@@ -430,6 +446,8 @@ mod tests {
         let b = GameNet::start(b_ip, port, "salon", "bbbb", b_ip).await.unwrap();
         a.set_ping_targets(vec![("bbbb".into(), b_ip)]);
         tokio::time::sleep(Duration::from_millis(2300)).await;
+        assert!(a.ping_stats().is_empty());
+        tokio::time::sleep(Duration::from_millis(5000)).await;
         let s = a.ping_stats().remove("bbbb").unwrap();
         assert!(s.sent >= 1 && s.lost == 0, "{s:?}");
         assert_eq!(s.recent.len() as u32, s.sent);

@@ -232,6 +232,15 @@ textarea.input { resize: vertical; }
 .menu .menu-title { font-size: 12px; color: var(--muted); padding: 6px 10px 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
 .menu .menu-note { font-size: 12px; color: var(--muted); padding: 2px 10px 6px; max-width: 260px; line-height: 1.35; overflow-wrap: anywhere; }
 .menu .menu-note.warn { color: var(--warn); }
+.menu-ping { max-width: 260px; }
+.ping-box { position: relative; margin: 4px 10px 6px; background: #05070c; border: 1px solid var(--border); border-radius: 4px; }
+.ping-chart { display: block; width: 100%; height: 64px; }
+.ping-chart .grid { stroke: #1d3550; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.ping-chart .line { fill: none; stroke: #3ddc5c; stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.ping-chart .lost { stroke: var(--bad); stroke-width: 1; opacity: .7; vector-effect: non-scaling-stroke; }
+.ping-top, .ping-span { position: absolute; font-size: 10px; color: #8aa0b8; pointer-events: none; }
+.ping-top { top: 2px; left: 4px; }
+.ping-span { bottom: 2px; right: 4px; }
 .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
 .banner.inline { margin: 0 0 14px; }
 .update-bar { display: flex; align-items: center; gap: 12px; }

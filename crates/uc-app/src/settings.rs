@@ -30,6 +30,8 @@ pub struct Settings {
     pub notify_online: bool,
     pub notify_knock: bool,
     pub notify_mention: bool,
+    /// Shows measurement details (live ping graph...) in the interface.
+    pub debug: bool,
 }
 
 impl Default for Settings {
@@ -49,6 +51,7 @@ impl Default for Settings {
             notify_online: true,
             notify_knock: true,
             notify_mention: true,
+            debug: false,
         }
     }
 }
