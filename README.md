@@ -7,8 +7,6 @@ Unlike ZeroTier or Radmin, the virtual network adapter only exists while you
 play. Games that find their lobbies through UDP broadcasts (with no IP
 setting) see the other players as if they were on a real local network.
 
-The app's interface is in French.
-
 ## How it works
 
 - **Salons**: a group of players with its own secret key. You join with an
