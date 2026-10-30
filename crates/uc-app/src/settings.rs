@@ -32,6 +32,8 @@ pub struct Settings {
     pub notify_mention: bool,
     /// Shows measurement details (live ping graph...) in the interface.
     pub debug: bool,
+    /// Interface language: "" follows Windows, "fr" or "en".
+    pub lang: String,
 }
 
 impl Default for Settings {
@@ -52,6 +54,7 @@ impl Default for Settings {
             notify_knock: true,
             notify_mention: true,
             debug: false,
+            lang: String::new(),
         }
     }
 }

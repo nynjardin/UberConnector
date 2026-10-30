@@ -1,11 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod engine;
+mod i18n;
 mod notify;
 mod settings;
 mod updater;
 
 use engine::{Engine, Phase, Snapshot};
+use i18n::{tr, trf};
 use settings::Settings;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -167,6 +169,12 @@ fn app_version() -> &'static str {
     updater::CURRENT
 }
 
+/// Interface language, "fr" or "en" (Windows language or the setting).
+#[tauri::command]
+fn ui_lang() -> &'static str {
+    i18n::code()
+}
+
 /// Looks for a newer version now (also done in the background).
 #[tauri::command]
 async fn check_update(pending: State<'_, PendingUpdate>) -> Result<Option<updater::Update>, String> {
@@ -180,7 +188,7 @@ async fn check_update(pending: State<'_, PendingUpdate>) -> Result<Option<update
 #[tauri::command]
 async fn install_update(app: AppHandle, engine: Eng<'_>, pending: State<'_, PendingUpdate>) -> Result<(), String> {
     let Some(update) = pending.0.lock().unwrap().clone() else {
-        return Err("aucune mise à jour en attente".into());
+        return Err(tr!("aucune mise à jour en attente", "no pending update").into());
     };
     // The engine's files (uc-helper, EasyTier) are replaced too.
     engine.shutdown();
@@ -199,7 +207,7 @@ async fn install_update(app: AppHandle, engine: Eng<'_>, pending: State<'_, Pend
     std::process::Command::new(&exe)
         .args(["--wait-pid", &std::process::id().to_string()])
         .spawn()
-        .map_err(|e| format!("lancement de la nouvelle version : {e}"))?;
+        .map_err(|e| trf!("lancement de la nouvelle version : {e}", "starting the new version: {e}"))?;
     app.exit(0);
     Ok(())
 }
@@ -259,18 +267,18 @@ fn show_main(app: &AppHandle) {
 
 fn phase_label(s: &Snapshot) -> String {
     match (s.phase, s.settings.connected.len()) {
-        (Phase::Off, _) => "désactivé".into(),
-        (Phase::Starting, _) => "activation…".into(),
-        (Phase::On, 0) => "activé, aucun salon".into(),
-        (Phase::On, 1) => "connecté à 1 salon".into(),
-        (Phase::On, n) => format!("connecté à {n} salons"),
+        (Phase::Off, _) => tr!("désactivé", "off").into(),
+        (Phase::Starting, _) => tr!("activation…", "starting…").into(),
+        (Phase::On, 0) => tr!("activé, aucun salon", "on, no room").into(),
+        (Phase::On, 1) => tr!("connecté à 1 salon", "connected to 1 room").into(),
+        (Phase::On, n) => trf!("connecté à {n} salons", "connected to {n} rooms"),
     }
 }
 
 fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Ouvrir UberConnector", true, None::<&str>)?;
-    let toggle = CheckMenuItem::with_id(app, "toggle", "Activé", true, false, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quitter", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", tr!("Ouvrir UberConnector", "Open UberConnector"), true, None::<&str>)?;
+    let toggle = CheckMenuItem::with_id(app, "toggle", tr!("Activé", "Enabled"), true, false, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", tr!("Quitter", "Quit"), true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open, &toggle, &sep, &quit])?;
 
@@ -302,6 +310,10 @@ fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
         .build(app)?;
 
     engine.set_on_change(move |s| {
+        // Also follows a language change in the settings.
+        let _ = open.set_text(tr!("Ouvrir UberConnector", "Open UberConnector"));
+        let _ = toggle.set_text(tr!("Activé", "Enabled"));
+        let _ = quit.set_text(tr!("Quitter", "Quit"));
         let _ = toggle.set_checked(s.phase != Phase::Off);
         let _ = tray.set_tooltip(Some(format!("UberConnector : {}", phase_label(s))));
     });
@@ -310,6 +322,8 @@ fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
 
 fn main() {
     after_update();
+    // Before any window or tray text.
+    i18n::set(&Settings::load(&settings::data_dir()).lang);
     // A clicked invite link shows the window even if autostart minimized it.
     let link = settings::link_arg(std::env::args());
     let minimized = link.is_none() && std::env::args().any(|a| a == "--minimized");
@@ -325,6 +339,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             take_invite,
             app_version,
+            ui_lang,
             check_update,
             install_update,
             get_state,
@@ -372,7 +387,7 @@ fn main() {
             setup_tray(&handle, &engine)?;
             // Test: a toast at launch (click it: shows the window).
             if std::env::var_os("UC_TEST_NOTIFY").is_some() {
-                notify::show(&handle, "Test UberConnector", "Les notifications fonctionnent.", "");
+                notify::show(&handle, "Test UberConnector", tr!("Les notifications fonctionnent.", "Notifications work."), "");
             }
             if !minimized {
                 show_main(&handle);

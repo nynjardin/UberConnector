@@ -26,11 +26,11 @@ function el(tag, cls, text) {
 }
 
 function toast(msg) {
-  const t = $("toast");
-  t.textContent = msg;
-  t.hidden = false;
+  const box = $("toast");
+  box.textContent = msg;
+  box.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.hidden = true), 1800);
+  toast.timer = setTimeout(() => (box.hidden = true), 1800);
 }
 
 async function copy(text) {
@@ -44,7 +44,7 @@ async function copy(text) {
     document.execCommand("copy");
     ta.remove();
   }
-  toast("Copié : " + text);
+  toast(t("Copié : {text}", { text }));
 }
 
 // ---- Images (custom avatars), fetched from the local cache by hash ----
@@ -147,26 +147,28 @@ function quality(m) {
 
 // `short`: for the narrow player list (details are in the player's menu).
 function pathLabel(m, short = false) {
-  if (m.path.startsWith("direct")) return m.path.includes("NAT percé") && !short ? "direct (NAT percé)" : "direct";
-  if (m.path.startsWith("relais")) return m.relay_via ? `relayé par ${m.relay_via}` : "relayé";
+  if (m.path.startsWith("direct")) return m.path.includes("NAT percé") && !short ? t("direct (NAT percé)") : "direct";
+  if (m.path.startsWith("relais")) return m.relay_via ? t("relayé par {name}", { name: m.relay_via }) : t("relayé");
   return m.path;
 }
 
 // Details and advice shown in a player's menu.
 function linkNotes(m) {
-  const out = [{ title: `${pathLabel(m)} · ping ${m.latency_ms === "-" ? "–" : Math.round(parseFloat(m.latency_ms)) + " ms"} · perte ${lossOf(m)} %` }];
+  const ping = m.latency_ms === "-" ? "–" : Math.round(parseFloat(m.latency_ms)) + " ms";
+  const out = [{ title: t("{path} · ping {ping} · perte {loss} %", { path: pathLabel(m), ping, loss: lossOf(m) }) }];
   if (m.path.startsWith("relais")) {
-    out.push({ note: `${m.relay_via ? `Le trafic passe par ${m.relay_via}` : "Le trafic passe par un autre joueur"} : un peu plus de latence, et la connexion tombe s'il part. Une connexion directe est possible si l'un de vous deux a une box qui ouvre les ports (UPnP).`, warn: true });
+    const via = m.relay_via ? t("Le trafic passe par {name}", { name: m.relay_via }) : t("Le trafic passe par un autre joueur");
+    out.push({ note: t("{via} : un peu plus de latence, et la connexion tombe s'il part. Une connexion directe est possible si l'un de vous deux a une box qui ouvre les ports (UPnP).", { via }), warn: true });
   }
-  if (lossOf(m) >= 5) out.push({ note: "Beaucoup de paquets perdus : saccades probables. Wi-Fi faible ou connexion saturée chez l'un de vous ?", warn: true });
-  else if (parseFloat(m.latency_ms) >= 150) out.push({ note: "Ping élevé : les jeux rapides peuvent en souffrir.", warn: true });
+  if (lossOf(m) >= 5) out.push({ note: t("Beaucoup de paquets perdus : saccades probables. Wi-Fi faible ou connexion saturée chez l'un de vous ?"), warn: true });
+  else if (parseFloat(m.latency_ms) >= 150) out.push({ note: t("Ping élevé : les jeux rapides peuvent en souffrir."), warn: true });
   return out;
 }
 
 // Debug: live ping graph of the last minute, then the 5-minute figures.
 function renderPing(node, p) {
   if (!p) {
-    node.replaceChildren(el("div", "menu-note", "Ping mesuré : en attente (mode jeu, quelques secondes après la connexion)."));
+    node.replaceChildren(el("div", "menu-note", t("Ping mesuré : en attente (mode jeu, quelques secondes après la connexion).")));
     return;
   }
   const W = 240, H = 64;
@@ -205,11 +207,16 @@ function renderPing(node, p) {
   const lost = recent.length - got.length;
   const out = [
     box,
-    el("div", "menu-note", `Dernière minute : ${got.length ? `${Math.min(...got)}–${Math.max(...got)} ms, médiane ${med}` : "aucune réponse"} · gigue ${jit.toFixed(1)} ms · perdus ${lost}`),
-    el("div", "menu-note", `5 min : ${p.min}–${p.max} ms, médiane ${p.median} · gigue ${p.jitter.toFixed(1)} ms · pics ${p.spikes} · perdus ${p.lost}/${p.sent}`),
+    el("div", "menu-note", t("Dernière minute : {range} · gigue {jit} ms · perdus {lost}", {
+      range: got.length ? t("{min}–{max} ms, médiane {med}", { min: Math.min(...got), max: Math.max(...got), med }) : t("aucune réponse"),
+      jit: jit.toFixed(1),
+      lost,
+    })),
+    el("div", "menu-note", t("5 min : {min}–{max} ms, médiane {med} · gigue {jit} ms · pics {spikes} · perdus {lost}/{sent}",
+      { min: p.min, max: p.max, med: p.median, jit: p.jitter.toFixed(1), spikes: p.spikes, lost: p.lost, sent: p.sent })),
   ];
   if (got.length >= 10 && (jit >= 10 || spikes * 20 >= got.length)) {
-    out.push(el("div", "menu-note warn", "Ping instable : les paquets arrivent tous, mais à des délais variables (Wi-Fi, connexion chargée par un téléchargement ou un stream…)."));
+    out.push(el("div", "menu-note warn", t("Ping instable : les paquets arrivent tous, mais à des délais variables (Wi-Fi, connexion chargée par un téléchargement ou un stream…).")));
   }
   node.replaceChildren(...out);
 }
@@ -217,13 +224,13 @@ function renderPing(node, p) {
 // How others reach us, with advice when it is fragile.
 function myNetText(st) {
   if (!st) return null;
-  if (st.port_open) return { cls: "good", text: `✓ Joignable directement : port ouvert par votre box (${st.port_open}).` };
-  const off = state.settings.port_map ? "" : " (ouverture automatique désactivée dans Réglages)";
+  if (st.port_open) return { cls: "good", text: t("✓ Joignable directement : port ouvert par votre box ({how}).", { how: st.port_open }) };
+  const off = state.settings.port_map ? "" : t(" (ouverture automatique désactivée dans Réglages)");
   if (st.nat === "symmetric") {
-    return { cls: "bad", text: `Votre box ne permet ni d'ouvrir un port${off} ni de percer les NAT : les connexions directes échoueront souvent, un autre joueur devra vous relayer. Activez l'UPnP dans l'interface de votre box.` };
+    return { cls: "bad", text: t("Votre box ne permet ni d'ouvrir un port{off} ni de percer les NAT : les connexions directes échoueront souvent, un autre joueur devra vous relayer. Activez l'UPnP dans l'interface de votre box.", { off }) };
   }
   // Usually fine: informative only, no instructions.
-  if (st.nat === "cone") return { cls: "", text: `Connexions directes par perçage des NAT (pas de port ouvert sur votre box${off}).` };
+  if (st.nat === "cone") return { cls: "", text: t("Connexions directes par perçage des NAT (pas de port ouvert sur votre box{off}).", { off }) };
   return null;
 }
 
@@ -253,7 +260,7 @@ function render(s) {
   const pill = $("phase-pill");
   pill.dataset.phase = s.phase;
   const n = connected.size;
-  pill.textContent = s.phase === "on" && n ? `Connecté · ${n} salon${n > 1 ? "s" : ""}` : PHASE_TEXT[s.phase];
+  pill.textContent = s.phase === "on" && n ? t("Connecté · {n} salon{s}", { n, s: n > 1 ? "s" : "" }) : t(PHASE_TEXT[s.phase]);
   const sw = $("main-switch");
   sw.checked = s.phase !== "off";
   sw.disabled = s.phase === "starting";
@@ -273,10 +280,10 @@ function render(s) {
       icon.append(avatarEl(x.avatar, "lg square", x.name));
       if (connected.has(x.id) && s.phase === "on") icon.append(el("span", "dot"));
       b.append(icon, el("span", "name", x.name));
-      if (x.id === s.settings.game_salon && s.phase === "on") b.append(el("span", "badge game", "actif"));
+      if (x.id === s.settings.game_salon && s.phase === "on") b.append(el("span", "badge game", t("actif")));
       if (unread[x.id] && x.id !== selected) b.append(el("span", "unread", String(unread[x.id])));
-      if (x.deleted) b.append(el("span", "badge", "supprimé"));
-      if (x.pending) b.append(el("span", "badge wait", "en attente"));
+      if (x.deleted) b.append(el("span", "badge", t("supprimé")));
+      if (x.pending) b.append(el("span", "badge wait", t("en attente")));
       if (x.knocks.length) b.append(el("span", "unread", String(x.knocks.length)));
       b.onclick = () => select(x.id);
       const li = el("li");
@@ -296,14 +303,14 @@ function render(s) {
   const av = $("cur-avatar");
   av.replaceChildren(avatarEl(cur.avatar, "lg square", cur.name));
   av.classList.toggle("editable", cur.is_owner && !cur.deleted);
-  av.title = cur.is_owner ? "Changer l'avatar du salon" : "";
+  av.title = cur.is_owner ? t("Changer l'avatar du salon") : "";
   $("cur-name").textContent = cur.name;
   $("cur-name").title = cur.name;
   $("cur-invite").textContent = cur.deleted ? "—" : cur.invite;
   $("key-lost").hidden = !cur.key_lost;
   const btn = $("btn-connect");
   btn.hidden = cur.deleted || cur.key_lost || cur.pending;
-  btn.textContent = isOn ? "Déconnecter" : "Se connecter";
+  btn.textContent = isOn ? t("Déconnecter") : t("Se connecter");
   btn.classList.toggle("primary", !isOn);
 
   // Bottom bar: the single game salon has the virtual adapter.
@@ -312,29 +319,29 @@ function render(s) {
   $("game-bar").classList.toggle("waiting", cur.pending);
   $("mode-spinner").hidden = !cur.pending;
   $("btn-game").hidden = cur.pending;
-  $("mode-title").textContent = cur.pending ? "Salle d'attente" : game ? "En jeu" : "Chat seulement";
+  $("mode-title").textContent = t(cur.pending ? "Salle d'attente" : game ? "En jeu" : "Chat seulement");
   $("mode-desc").textContent = cur.pending
-    ? "Le propriétaire ou un modérateur doit valider votre arrivée. Laissez UberConnector ouvert : la connexion se fera toute seule."
+    ? t("Le propriétaire ou un modérateur doit valider votre arrivée. Laissez UberConnector ouvert : la connexion se fera toute seule.")
     : game
-    ? `Carte réseau active, plage 10.${cur.subnet}.0.0/16 : choisissez votre IP dans le jeu.`
-    : "Pas de carte réseau pour ce salon : chat et liste des joueurs uniquement.";
+    ? t("Carte réseau active, plage 10.{subnet}.0.0/16 : choisissez votre IP dans le jeu.", { subnet: cur.subnet })
+    : t("Pas de carte réseau pour ce salon : chat et liste des joueurs uniquement.");
   $("mode-ip-box").hidden = !game;
   $("btn-gametest").hidden = !game;
   $("cur-ip").textContent = st?.my_vip || "–";
-  $("btn-game").textContent = game ? "Quitter le mode jeu" : "Jouer dans ce salon";
+  $("btn-game").textContent = game ? t("Quitter le mode jeu") : t("Jouer dans ce salon");
   $("btn-game").classList.toggle("primary", !game);
-  $("btn-game").title = game ? "" : "Déplace la carte réseau vers ce salon (un seul salon en jeu à la fois)";
+  $("btn-game").title = game ? "" : t("Déplace la carte réseau vers ce salon (un seul salon en jeu à la fois)");
 
   // Players
   const members = st?.members || [];
   $("players-wait").hidden = members.length > 0;
-  $("players-wait").textContent =
+  $("players-wait").textContent = t(
     cur.deleted ? "Ce salon a été supprimé par son propriétaire."
     : cur.pending ? "Les joueurs apparaîtront une fois votre arrivée validée."
     : !isOn ? "Vous n'êtes pas connecté à ce salon."
     : s.phase === "starting" ? "Acceptez la demande d'autorisation de Windows…"
     : s.phase === "off" ? "UberConnector est désactivé."
-    : "Connexion au salon…";
+    : "Connexion au salon…");
   $("count").textContent = members.length ? `(${members.length})` : "";
   const net = live ? myNetText(st) : null;
   $("my-net").hidden = !net;
@@ -344,14 +351,15 @@ function render(s) {
     ...members.map((m) => {
       const me = m.path === "vous";
       const li = el("li", "player");
-      li.title = me ? `${m.name} (vous) · ${m.vip}` : `${m.name}\n${m.vip} · ${pathLabel(m)} · perte ${lossOf(m)} % · NAT ${m.nat}\nCliquer pour les détails`;
+      li.title = me ? t("{name} (vous) · {vip}", { name: m.name, vip: m.vip })
+        : t("{name}\n{vip} · {path} · perte {loss} % · NAT {nat}\nCliquer pour les détails", { name: m.name, vip: m.vip, path: pathLabel(m), loss: lossOf(m), nat: m.nat });
       li.onclick = (e) => playerMenu(e, cur, m, me);
       const ping = me
         ? el("span")
         : el("span", "ping " + quality(m), m.latency_ms === "-" ? "–" : `${Math.round(parseFloat(m.latency_ms))} ms`);
-      const sub = el("span", "player-sub", me ? `vous · ${m.vip}` : `${m.vip} · ${pathLabel(m, true)}`);
+      const sub = el("span", "player-sub", me ? t("vous · {vip}", { vip: m.vip }) : `${m.vip} · ${pathLabel(m, true)}`);
       if (!me && !m.chat) sub.prepend(el("span", "waiting", "chat… · "));
-      if (!me && lossOf(m) >= 1) sub.append(el("span", lossOf(m) >= 5 ? "loss bad" : "loss", ` · perte ${lossOf(m)} %`));
+      if (!me && lossOf(m) >= 1) sub.append(el("span", lossOf(m) >= 5 ? "loss bad" : "loss", t(" · perte {loss} %", { loss: lossOf(m) })));
       const main = el("span", "player-main", m.name);
       const role = roleOf(cur, m.id);
       if (role) main.append(el("span", "role", role.icon));
@@ -371,18 +379,18 @@ function render(s) {
   const others = members.filter((m) => m.path !== "vous");
   const linked = others.filter((m) => m.chat).length;
   // What the user waits for, from session start to every member linked.
-  const KEEP = " Vous pouvez déjà écrire : vos messages seront envoyés dès que possible.";
+  const KEEP = t(" Vous pouvez déjà écrire : vos messages seront envoyés dès que possible.");
   const stage = st?.stage || "dht";
   let pendingText = null;
   let spinning = true;
   if (live) {
-    if (others.length > 0 && linked === 0) pendingText = "Connexion du chat aux autres joueurs…" + KEEP;
-    else if (others.length > 0 && linked < others.length) pendingText = `Chat relié à ${linked} joueur${linked > 1 ? "s" : ""} sur ${others.length}, connexion des autres en cours…`;
-    else if (others.length === 0 && stage === "dht") pendingText = "Connexion au réseau de découverte…" + KEEP;
-    else if (others.length === 0 && stage === "starting") pendingText = "Démarrage du réseau du salon…" + KEEP;
-    else if (others.length === 0 && stage === "searching") pendingText = "Recherche des autres joueurs du salon (jusqu'à une minute)…" + KEEP;
+    if (others.length > 0 && linked === 0) pendingText = t("Connexion du chat aux autres joueurs…") + KEEP;
+    else if (others.length > 0 && linked < others.length) pendingText = t("Chat relié à {linked} joueur{s} sur {total}, connexion des autres en cours…", { linked, s: linked > 1 ? "s" : "", total: others.length });
+    else if (others.length === 0 && stage === "dht") pendingText = t("Connexion au réseau de découverte…") + KEEP;
+    else if (others.length === 0 && stage === "starting") pendingText = t("Démarrage du réseau du salon…") + KEEP;
+    else if (others.length === 0 && stage === "searching") pendingText = t("Recherche des autres joueurs du salon (jusqu'à une minute)…") + KEEP;
     else if (others.length === 0) {
-      pendingText = "Aucun autre joueur en ligne pour l'instant. Ils apparaîtront ici dès leur connexion.";
+      pendingText = t("Aucun autre joueur en ligne pour l'instant. Ils apparaîtront ici dès leur connexion.");
       spinning = false;
     }
   }
@@ -394,8 +402,8 @@ function render(s) {
   const canChat = live && !cur.deleted;
   $("chat-input").disabled = !canChat;
   $("chat-form").querySelector("button").disabled = !canChat;
-  $("chat-input").placeholder = canChat ? `Écrire dans ${cur.name}…`
-    : cur.pending ? "En attente de validation…" : "Connectez-vous au salon pour discuter";
+  $("chat-input").placeholder = canChat ? t("Écrire dans {name}…", { name: cur.name })
+    : t(cur.pending ? "En attente de validation…" : "Connectez-vous au salon pour discuter");
   if (renderedChat !== cur.id) renderChat();
   if ($("log").open) renderLog();
   if ($("gametest").open) renderGameTest();
@@ -407,12 +415,12 @@ function flagEls(salon, id) {
   const warn = warningsOf(salon, id);
   if (warn.bannedIn.length) {
     const b = el("span", "flag bad", "⛔");
-    b.title = "Banni de : " + warn.bannedIn.map((x) => x.name).join(", ");
+    b.title = t("Banni de : {list}", { list: warn.bannedIn.map((x) => x.name).join(", ") });
     out.push(b);
   }
   if (warn.noob) {
     const b = el("span", "flag noob", "Noob");
-    b.title = "Identité rencontrée pour la première fois il y a moins de 3 jours";
+    b.title = t("Identité rencontrée pour la première fois il y a moins de 3 jours");
     out.push(b);
   }
   return out;
@@ -423,20 +431,20 @@ function knockEl(salon, k) {
   const main = el("span", "player-main", k.name);
   main.append(...flagEls(salon, k.id));
   const warn = warningsOf(salon, k.id);
-  li.title = warn.bannedIn.length ? `${k.name}\nBanni de : ${warn.bannedIn.map((x) => x.name).join(", ")}` : k.name;
+  li.title = warn.bannedIn.length ? `${k.name}\n` + t("Banni de : {list}", { list: warn.bannedIn.map((x) => x.name).join(", ") }) : k.name;
   const actions = el("span", "knock-actions");
-  const ok = el("button", "btn small primary", "Accepter");
-  const no = el("button", "btn small", "Ignorer");
+  const ok = el("button", "btn small primary", t("Accepter"));
+  const no = el("button", "btn small", t("Ignorer"));
   ok.onclick = async () => {
     ok.disabled = no.disabled = true;
-    ok.textContent = "Validation…";
+    ok.textContent = t("Validation…");
     try {
       await invoke("admit_member", { id: salon.id, member: k.id });
-      toast(`${k.name} est accepté : la connexion se fait de son côté d'ici une minute`);
+      toast(t("{name} est accepté : la connexion se fait de son côté d'ici une minute", { name: k.name }));
     } catch (err) {
       toast(String(err));
       ok.disabled = no.disabled = false;
-      ok.textContent = "Accepter";
+      ok.textContent = t("Accepter");
     }
   };
   no.onclick = () => invoke("dismiss_knock", { id: salon.id, member: k.id });
@@ -453,8 +461,8 @@ function warningsOf(salon, id) {
 
 function roleOf(salon, id) {
   if (!id) return null;
-  if (id === salon.owner_id) return { icon: "👑", label: "Propriétaire" };
-  if (salon.mod_ids.includes(id)) return { icon: "🛡️", label: "Modérateur" };
+  if (id === salon.owner_id) return { icon: "👑", label: t("Propriétaire") };
+  if (salon.mod_ids.includes(id)) return { icon: "🛡️", label: t("Modérateur") };
   return null;
 }
 
@@ -463,9 +471,9 @@ function renderGameTest() {
   const cur = current();
   if (!cur) return;
   $("gt-salon").textContent = `· ${cur.name}`;
-  const t = state.statuses[cur.id]?.game_test;
-  const running = !t || t.running;
-  const rows = t?.results || [];
+  const test = state.statuses[cur.id]?.game_test;
+  const running = !test || test.running;
+  const rows = test?.results || [];
   const cell = (ok, text) => el("td", ok ? "ok" : running ? "wait" : "ko", ok ? text : running ? "…" : "✗");
   $("gt-rows").replaceChildren(
     ...rows.map((r) => {
@@ -480,22 +488,22 @@ function renderGameTest() {
       return tr;
     })
   );
-  $("gt-empty").hidden = running || rows.length > 0 || !!t?.error;
+  $("gt-empty").hidden = running || rows.length > 0 || !!test?.error;
   $("gt-running").hidden = !running;
   $("gt-again").disabled = running;
-  let hint = t?.error ? `Test impossible : ${t.error}.` : "";
+  let hint = test?.error ? t("Test impossible : {err}.", { err: test.error }) : "";
   if (!running && rows.length) {
     const none = rows.filter((r) => r.direct_ms == null && !r.subnet && !r.global && !r.global_bound);
     const noBound = rows.filter((r) => r.direct_ms != null && !r.global_bound);
     const noAuto = rows.filter((r) => r.direct_ms != null && !r.global);
-    const rivals = t.rivals?.length ? ` Sur ce PC, Windows les envoie sans doute par une autre carte réseau : ${t.rivals.join(", ")}. Désactivez-la pendant la partie pour que ces jeux voient les autres.` : "";
-    if (none.length) hint = `Sans réponse : ${none.map((r) => r.name || r.id).join(", ")}. Ces joueurs ne sont peut-être pas en jeu dans ce salon (« Chat seulement »), ou leur pare-feu bloque le jeu.`;
-    else if (noBound.length && noAuto.length) hint = "Les parties rejointes par IP fonctionneront, mais les annonces de parties ne passent pas : saisissez l'IP de l'hôte dans le jeu.";
-    else if (noAuto.length) hint = "Les jeux où l'on choisit son IP (comme Burnout) verront les parties. Ceux qui ne laissent pas choisir risquent de ne pas les voir." + rivals;
-    else if (noBound.length) hint = "Les jeux qui ne laissent pas choisir l'IP verront les parties. Dans ceux où l'on choisit son IP, rejoignez l'hôte par son IP si sa partie n'apparaît pas.";
-    else hint = "Tout est bon : le jeu verra les autres joueurs comme sur un réseau local.";
+    const rivals = test.rivals?.length ? t(" Sur ce PC, Windows les envoie sans doute par une autre carte réseau : {list}. Désactivez-la pendant la partie pour que ces jeux voient les autres.", { list: test.rivals.join(", ") }) : "";
+    if (none.length) hint = t("Sans réponse : {list}. Ces joueurs ne sont peut-être pas en jeu dans ce salon (« Chat seulement »), ou leur pare-feu bloque le jeu.", { list: none.map((r) => r.name || r.id).join(", ") });
+    else if (noBound.length && noAuto.length) hint = t("Les parties rejointes par IP fonctionneront, mais les annonces de parties ne passent pas : saisissez l'IP de l'hôte dans le jeu.");
+    else if (noAuto.length) hint = t("Les jeux où l'on choisit son IP (comme Burnout) verront les parties. Ceux qui ne laissent pas choisir risquent de ne pas les voir.") + rivals;
+    else if (noBound.length) hint = t("Les jeux qui ne laissent pas choisir l'IP verront les parties. Dans ceux où l'on choisit son IP, rejoignez l'hôte par son IP si sa partie n'apparaît pas.");
+    else hint = t("Tout est bon : le jeu verra les autres joueurs comme sur un réseau local.");
   }
-  if (t?.relayed != null) hint += ` (Annonces de jeux relayées depuis ce PC : ${t.relayed}.)`;
+  if (test?.relayed != null) hint += t(" (Annonces de jeux relayées depuis ce PC : {n}.)", { n: test.relayed });
   $("gt-hint").textContent = hint;
 }
 function startGameTest() {
@@ -548,24 +556,24 @@ function playerMenu(event, salon, m, me) {
   const items = [{ title: m.name }];
   if (!me) {
     const warn = warningsOf(salon, m.id);
-    for (const x of warn.bannedIn) items.push({ title: `⛔ Banni de « ${x.name} »` });
-    if (warn.noob) items.push({ title: "Noob : rencontré il y a moins de 3 jours" });
+    for (const x of warn.bannedIn) items.push({ title: t("⛔ Banni de « {name} »", { name: x.name }) });
+    if (warn.noob) items.push({ title: t("Noob : rencontré il y a moins de 3 jours") });
     items.push(...linkNotes(m));
     if (state.settings.debug) {
       items.push({ ping: () => state.statuses[salon.id]?.members.find((x) => x.id === m.id)?.ping });
     }
   }
-  items.push({ label: `Copier l'IP (${m.vip})`, run: () => copy(m.vip) });
+  items.push({ label: t("Copier l'IP ({vip})", { vip: m.vip }), run: () => copy(m.vip) });
   const isOwner = m.id === salon.owner_id;
   const isMod = salon.mod_ids.includes(m.id);
   if (!me && m.id && !salon.deleted) {
     if (salon.is_owner) {
       items.push(isMod
-        ? { label: "Retirer le rôle de modérateur", run: () => toast("Mise à jour des modérateurs…") || act(invoke("set_moderator", { id: salon.id, member: m.id, on: false }), "Modérateur retiré") }
-        : { label: "Nommer modérateur", run: () => toast("Nomination en cours, jusqu'à 30 secondes…") || act(invoke("set_moderator", { id: salon.id, member: m.id, on: true }), `${m.name} est modérateur`) });
+        ? { label: t("Retirer le rôle de modérateur"), run: () => toast(t("Mise à jour des modérateurs…")) || act(invoke("set_moderator", { id: salon.id, member: m.id, on: false }), t("Modérateur retiré")) }
+        : { label: t("Nommer modérateur"), run: () => toast(t("Nomination en cours, jusqu'à 30 secondes…")) || act(invoke("set_moderator", { id: salon.id, member: m.id, on: true }), t("{name} est modérateur", { name: m.name })) });
     }
     if (salon.can_moderate && !isOwner && (salon.is_owner || !isMod)) {
-      items.push("sep", { label: "Bannir…", danger: true, run: () => confirmBan(salon, m) });
+      items.push("sep", { label: t("Bannir…"), danger: true, run: () => confirmBan(salon, m) });
     }
   }
   showMenu(event, items);
@@ -573,14 +581,14 @@ function playerMenu(event, salon, m, me) {
 
 function confirmBan(salon, m) {
   ask({
-    title: `Bannir ${m.name} ?`,
-    text: "Il sera exclu du chat immédiatement. La clé du salon et le code d'invitation vont changer : les membres connectés suivront automatiquement, les autres auront besoin du nouveau code.",
-    ok: "Bannir",
+    title: t("Bannir {name} ?", { name: m.name }),
+    text: t("Il sera exclu du chat immédiatement. La clé du salon et le code d'invitation vont changer : les membres connectés suivront automatiquement, les autres auront besoin du nouveau code."),
+    ok: t("Bannir"),
     danger: true,
-    busy: "Bannissement : nouvelle clé et nouveau code distribués aux membres, cela peut prendre jusqu'à une minute…",
+    busy: t("Bannissement : nouvelle clé et nouveau code distribués aux membres, cela peut prendre jusqu'à une minute…"),
     run: async () => {
       const n = await invoke("ban_member", { id: salon.id, member: m.id });
-      toast(`${m.name} est banni · nouvelle clé remise à ${n} membre${n > 1 ? "s" : ""}`);
+      toast(t("{name} est banni · nouvelle clé remise à {n} membre{s}", { name: m.name, n, s: n > 1 ? "s" : "" }));
     },
   });
 }
@@ -599,58 +607,58 @@ $("btn-manage").addEventListener("click", (e) => {
   const items = [{ title: cur.name }];
   if (cur.is_owner && !cur.deleted) {
     items.push(
-      { label: "Changer l'avatar du salon", run: () => $("cur-avatar").click() },
-      { label: "Renommer…", run: renameSalon },
-      { label: cur.gated ? "✓ Validation des nouveaux venus…" : "Validation des nouveaux venus…", run: () => setGated(cur) },
+      { label: t("Changer l'avatar du salon"), run: () => $("cur-avatar").click() },
+      { label: t("Renommer…"), run: renameSalon },
+      { label: t(cur.gated ? "✓ Validation des nouveaux venus…" : "Validation des nouveaux venus…"), run: () => setGated(cur) },
     );
   }
   if (cur.can_moderate && !cur.deleted) {
     items.push(
-      { label: "Nouveau code d'invitation…", run: () => regenerate(cur) },
-      { label: `Membres bannis (${cur.banned.length})`, run: openBans },
+      { label: t("Nouveau code d'invitation…"), run: () => regenerate(cur) },
+      { label: t("Membres bannis ({n})", { n: cur.banned.length }), run: openBans },
     );
   }
   items.push("sep");
-  if (cur.is_owner && !cur.deleted) items.push({ label: "Supprimer le salon…", danger: true, run: deleteSalon });
-  else items.push({ label: "Retirer de ma liste…", danger: true, run: forgetSalon });
+  if (cur.is_owner && !cur.deleted) items.push({ label: t("Supprimer le salon…"), danger: true, run: deleteSalon });
+  else items.push({ label: t("Retirer de ma liste…"), danger: true, run: forgetSalon });
   showMenu(e, items);
 });
 
 function setGated(cur) {
   if (cur.gated) {
     ask({
-      title: "Désactiver la validation ?",
-      text: "Toute personne ayant le code d'invitation pourra entrer et jouer directement. Les personnes en salle d'attente entreront aussi.",
-      ok: "Ouvrir le salon",
-      busy: "Publication du changement…",
+      title: t("Désactiver la validation ?"),
+      text: t("Toute personne ayant le code d'invitation pourra entrer et jouer directement. Les personnes en salle d'attente entreront aussi."),
+      ok: t("Ouvrir le salon"),
+      busy: t("Publication du changement…"),
       run: async () => {
         await invoke("set_gated", { id: cur.id, on: false });
-        toast("Salon ouvert : le code suffit pour entrer");
+        toast(t("Salon ouvert : le code suffit pour entrer"));
       },
     });
     return;
   }
   ask({
-    title: "Valider les nouveaux venus ?",
-    text: "Le code d'invitation ne donnera plus accès au salon : chaque nouveau venu attendra qu'un modérateur ou vous l'acceptiez. La clé du salon change maintenant et les membres connectés la reçoivent automatiquement. Les membres hors ligne repasseront par la salle d'attente.",
-    ok: "Activer",
-    busy: "Activation : nouvelle clé distribuée aux membres, cela peut prendre jusqu'à une minute…",
+    title: t("Valider les nouveaux venus ?"),
+    text: t("Le code d'invitation ne donnera plus accès au salon : chaque nouveau venu attendra qu'un modérateur ou vous l'acceptiez. La clé du salon change maintenant et les membres connectés la reçoivent automatiquement. Les membres hors ligne repasseront par la salle d'attente."),
+    ok: t("Activer"),
+    busy: t("Activation : nouvelle clé distribuée aux membres, cela peut prendre jusqu'à une minute…"),
     run: async () => {
       const n = await invoke("set_gated", { id: cur.id, on: true });
-      toast(`Validation activée · nouvelle clé remise à ${n} membre${n > 1 ? "s" : ""}`);
+      toast(t("Validation activée · nouvelle clé remise à {n} membre{s}", { n, s: n > 1 ? "s" : "" }));
     },
   });
 }
 
 function regenerate(cur) {
   ask({
-    title: "Nouveau code d'invitation ?",
-    text: "L'ancien code ne fonctionnera plus et la clé du salon change. Les membres connectés suivent automatiquement, les autres auront besoin du nouveau code.",
-    ok: "Changer le code",
-    busy: "Nouvelle clé et nouveau code distribués aux membres, cela peut prendre jusqu'à une minute…",
+    title: t("Nouveau code d'invitation ?"),
+    text: t("L'ancien code ne fonctionnera plus et la clé du salon change. Les membres connectés suivent automatiquement, les autres auront besoin du nouveau code."),
+    ok: t("Changer le code"),
+    busy: t("Nouvelle clé et nouveau code distribués aux membres, cela peut prendre jusqu'à une minute…"),
     run: async () => {
       const n = await invoke("regenerate_invite", { id: cur.id });
-      toast(`Nouveau code · clé remise à ${n} membre${n > 1 ? "s" : ""}`);
+      toast(t("Nouveau code · clé remise à {n} membre{s}", { n, s: n > 1 ? "s" : "" }));
     },
   });
 }
@@ -663,14 +671,14 @@ function renderBans() {
     ...cur.banned.map((b) => {
       const li = el("li");
       li.append(el("span", "who", b.name ? `${b.name} (${b.id})` : b.id));
-      const btn = el("button", "btn small", "Débannir");
+      const btn = el("button", "btn small", t("Débannir"));
       btn.onclick = async () => {
         $("bans-error").hidden = true;
         $("bans-busy").hidden = false;
         $("bans-list").querySelectorAll("button").forEach((x) => (x.disabled = true));
         try {
           await invoke("unban_member", { id: cur.id, member: b.id });
-          toast("Bannissement levé");
+          toast(t("Bannissement levé"));
         } catch (err) {
           $("bans-error").textContent = String(err);
           $("bans-error").hidden = false;
@@ -698,7 +706,7 @@ const unread = {};
 let renderedChat = null;
 
 function fmtTime(ts) {
-  return new Date(ts * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  return new Date(ts * 1000).toLocaleTimeString(LANG === "fr" ? "fr-FR" : undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 function lineEl(line, prev) {
@@ -722,7 +730,7 @@ function renderChat() {
   log.replaceChildren(...lines.map((l, i) => lineEl(l, lines[i - 1])));
   log.hidden = lines.length === 0;
   $("chat-empty").hidden = lines.length > 0;
-  $("chat-empty").textContent = "Aucun message. Les messages ne sont pas conservés : ils disparaissent à la déconnexion.";
+  $("chat-empty").textContent = t("Aucun message. Les messages ne sont pas conservés : ils disparaissent à la déconnexion.");
   if (switched || atBottom) log.scrollTop = log.scrollHeight;
 }
 
@@ -777,7 +785,7 @@ function ask({ title, text = "", input, placeholder = "", ok = "OK", danger = fa
   askBusy = busy;
   $("ask-busy").hidden = true;
   $("ask-input").disabled = false;
-  $("ask-cancel").textContent = "Annuler";
+  $("ask-cancel").textContent = t("Annuler");
   $("ask-title").textContent = title;
   $("ask-text").textContent = text;
   const inp = $("ask-input");
@@ -802,7 +810,7 @@ $("ask-form").addEventListener("submit", async (e) => {
     $("ask-busy").hidden = false;
     $("ask-input").disabled = true;
     // Closing does not cancel: the operation goes on in the background.
-    $("ask-cancel").textContent = "Fermer";
+    $("ask-cancel").textContent = t("Fermer");
   }
   try {
     await askRun($("ask-input").value.trim());
@@ -814,7 +822,7 @@ $("ask-form").addEventListener("submit", async (e) => {
     okBtn.disabled = false;
     $("ask-busy").hidden = true;
     $("ask-input").disabled = false;
-    $("ask-cancel").textContent = "Annuler";
+    $("ask-cancel").textContent = t("Annuler");
   }
 });
 
@@ -872,7 +880,7 @@ async function shrinkImage(file) {
     const img = await new Promise((ok, ko) => {
       const i = new Image();
       i.onload = () => ok(i);
-      i.onerror = () => ko(new Error("image illisible"));
+      i.onerror = () => ko(new Error(t("image illisible")));
       i.src = url;
     });
     const size = 128;
@@ -883,7 +891,7 @@ async function shrinkImage(file) {
       const blob = await new Promise((ok) => canvas.toBlob(ok, "image/webp", q));
       if (blob && blob.size <= 46 * 1024) return new Uint8Array(await blob.arrayBuffer());
     }
-    throw new Error("image trop complexe, essayez-en une autre");
+    throw new Error(t("image trop complexe, essayez-en une autre"));
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -910,7 +918,7 @@ $("picker-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const okBtn = $("picker-ok");
   okBtn.disabled = true;
-  okBtn.textContent = "Enregistrement…";
+  okBtn.textContent = t("Enregistrement…");
   try {
     await pk.onOk(pk.value);
     pickerDlg.close();
@@ -919,7 +927,7 @@ $("picker-form").addEventListener("submit", async (e) => {
     $("picker-error").hidden = false;
   } finally {
     okBtn.disabled = false;
-    okBtn.textContent = "Valider";
+    okBtn.textContent = t("Valider");
   }
 });
 
@@ -928,8 +936,8 @@ const current = () => state.salons.find((x) => x.id === selected);
 
 $("main-switch").addEventListener("change", (e) => invoke("set_enabled", { on: e.target.checked }));
 $("btn-create").addEventListener("click", () =>
-  ask({ title: "Créer un salon", input: "", placeholder: "Nom du salon", ok: "Créer",
-        busy: "Création du salon et publication sur le réseau, cela prend 10 à 30 secondes…",
+  ask({ title: t("Créer un salon"), input: "", placeholder: t("Nom du salon"), ok: t("Créer"),
+        busy: t("Création du salon et publication sur le réseau, cela prend 10 à 30 secondes…"),
         run: async (name) => select(await invoke("create_salon", { name })) })
 );
 // `code` comes from a clicked invite link: the user still confirms.
@@ -937,15 +945,15 @@ function joinSalon(code = "") {
   const known = code && state.salons.find((x) => x.invite === code && !x.deleted);
   if (known) {
     select(known.id);
-    toast(`Vous êtes déjà dans « ${known.name} »`);
+    toast(t("Vous êtes déjà dans « {name} »", { name: known.name }));
     return;
   }
   // Replaces any open dialog (an operation in progress goes on in the background).
   if (askDlg.open) askDlg.close();
-  ask({ title: "Rejoindre un salon",
-        text: code ? "Vous avez ouvert un lien d'invitation. Rejoindre ce salon ?" : "Saisissez le code ou le lien d'invitation reçu.",
-        input: code, placeholder: "ex. K7QM-ZXRA-PQ4H", ok: "Rejoindre",
-        busy: "Recherche de l'invitation sur le réseau, cela prend 10 à 30 secondes…",
+  ask({ title: t("Rejoindre un salon"),
+        text: t(code ? "Vous avez ouvert un lien d'invitation. Rejoindre ce salon ?" : "Saisissez le code ou le lien d'invitation reçu."),
+        input: code, placeholder: t("ex. K7QM-ZXRA-PQ4H"), ok: t("Rejoindre"),
+        busy: t("Recherche de l'invitation sur le réseau, cela prend 10 à 30 secondes…"),
         run: async (code) => select(await invoke("join_invite", { code })) });
 }
 $("btn-join").addEventListener("click", () => joinSalon());
@@ -958,10 +966,10 @@ $("btn-copy-invite").addEventListener("click", (e) => {
   const cur = current();
   if (cur.deleted) return;
   const items = [];
-  if (INVITE_PAGE) items.push({ label: "Copier le lien web (cliquable partout)", run: () => copy(`${INVITE_PAGE}#${cur.invite}`) });
+  if (INVITE_PAGE) items.push({ label: t("Copier le lien web (cliquable partout)"), run: () => copy(`${INVITE_PAGE}#${cur.invite}`) });
   items.push(
-    { label: "Copier le lien uberconnector://", run: () => copy(inviteLink(cur.invite)) },
-    { label: `Copier le code (${cur.invite})`, run: () => copy(cur.invite) },
+    { label: t("Copier le lien uberconnector://"), run: () => copy(inviteLink(cur.invite)) },
+    { label: t("Copier le code ({code})", { code: cur.invite }), run: () => copy(cur.invite) },
   );
   showMenu(e, items);
 });
@@ -986,7 +994,7 @@ $("cur-avatar").addEventListener("click", () => {
   const cur = current();
   if (!cur.is_owner || cur.deleted) return;
   openPicker({
-    title: `Avatar de « ${cur.name} »`,
+    title: t("Avatar de « {name} »", { name: cur.name }),
     value: cur.avatar,
     fallbackName: cur.name,
     onOk: (avatar) => invoke("set_salon_avatar", { id: cur.id, avatar }),
@@ -994,25 +1002,25 @@ $("cur-avatar").addEventListener("click", () => {
 });
 function renameSalon() {
   const cur = current();
-  ask({ title: "Renommer le salon", input: cur.name, ok: "Renommer", busy: "Publication du nouveau nom…", run: (name) => invoke("rename_salon", { id: cur.id, name }) });
+  ask({ title: t("Renommer le salon"), input: cur.name, ok: t("Renommer"), busy: t("Publication du nouveau nom…"), run: (name) => invoke("rename_salon", { id: cur.id, name }) });
 }
 function deleteSalon() {
   const cur = current();
   ask({
-    title: `Supprimer « ${cur.name} » ?`,
-    text: "Le salon disparaîtra pour tous ses membres et le code d'invitation ne fonctionnera plus. C'est définitif.",
-    ok: "Supprimer",
+    title: t("Supprimer « {name} » ?", { name: cur.name }),
+    text: t("Le salon disparaîtra pour tous ses membres et le code d'invitation ne fonctionnera plus. C'est définitif."),
+    ok: t("Supprimer"),
     danger: true,
-    busy: "Suppression du salon sur le réseau…",
+    busy: t("Suppression du salon sur le réseau…"),
     run: () => invoke("delete_salon", { id: cur.id }),
   });
 }
 function forgetSalon() {
   const cur = current();
   ask({
-    title: `Retirer « ${cur.name} » ?`,
-    text: cur.deleted ? "Ce salon a été supprimé par son propriétaire." : "Vous pourrez y revenir plus tard avec son code d'invitation.",
-    ok: "Retirer",
+    title: t("Retirer « {name} » ?", { name: cur.name }),
+    text: t(cur.deleted ? "Ce salon a été supprimé par son propriétaire." : "Vous pourrez y revenir plus tard avec son code d'invitation."),
+    ok: t("Retirer"),
     run: () => invoke("forget_salon", { id: cur.id }),
   });
 }
@@ -1026,11 +1034,10 @@ document.querySelectorAll("[data-copy]").forEach((b) =>
 // Collapsible salons pane (avatars only).
 function setCollapsed(on) {
   $("layout").classList.toggle("collapsed", on);
-  $("btn-collapse").title = on ? "Agrandir le volet" : "Réduire le volet";
+  $("btn-collapse").title = t(on ? "Agrandir le volet" : "Réduire le volet");
   store.set("collapsed", on ? "1" : "");
 }
 $("btn-collapse").addEventListener("click", () => setCollapsed(!$("layout").classList.contains("collapsed")));
-setCollapsed(store.get("collapsed") === "1");
 
 // ---- Profile ----
 const profileDlg = $("profile");
@@ -1047,7 +1054,7 @@ $("btn-profile").addEventListener("click", () => {
 });
 $("pf-avatar").addEventListener("click", () =>
   openPicker({
-    title: "Mon avatar",
+    title: t("Mon avatar"),
     value: pfAvatar,
     onOk: async (a) => { pfAvatar = a || DEFAULT_AVATAR; paintAvatar($("pf-preview"), pfAvatar); },
   })
@@ -1065,7 +1072,7 @@ $("profile-form").addEventListener("submit", async (e) => {
   try {
     await invoke("save_settings", { settings });
     profileDlg.close();
-    toast("Profil enregistré");
+    toast(t("Profil enregistré"));
   } catch (err) {
     $("profile-error").textContent = String(err);
     $("profile-error").hidden = false;
@@ -1084,6 +1091,7 @@ $("btn-settings").addEventListener("click", () => {
   $("set-notify-knock").checked = s.notify_knock;
   $("set-notify-mention").checked = s.notify_mention;
   $("set-debug").checked = s.debug;
+  $("set-lang").value = s.lang;
   $("set-relays").value = s.relays.join("\n");
   $("settings-error").hidden = true;
   dlg.showModal();
@@ -1100,12 +1108,15 @@ $("settings-form").addEventListener("submit", async (e) => {
     notify_knock: $("set-notify-knock").checked,
     notify_mention: $("set-notify-mention").checked,
     debug: $("set-debug").checked,
+    lang: $("set-lang").value,
     relays: $("set-relays").value.split("\n").map((r) => r.trim()).filter(Boolean),
   };
   try {
     await invoke("save_settings", { settings });
     dlg.close();
-    toast("Réglages enregistrés");
+    // Static texts are translated once: reload the page in the new language.
+    if ((await invoke("ui_lang")) !== LANG) return location.reload();
+    toast(t("Réglages enregistrés"));
   } catch (err) {
     $("settings-error").textContent = String(err);
     $("settings-error").hidden = false;
@@ -1119,8 +1130,8 @@ function renderLog() {
   const st = cur && state.statuses[cur.id];
   const events = st?.events || [];
   const timings = st?.timings || [];
-  const lines = !st ? ["(rien : salon non connecté)"]
-    : [...(timings.length ? ["⏱ Chronologie de la connexion", ...timings, ""] : []), ...events];
+  const lines = !st ? [t("(rien : salon non connecté)")]
+    : [...(timings.length ? [t("⏱ Chronologie de la connexion"), ...timings, ""] : []), ...events];
   $("events").replaceChildren(...lines.map((e) => el("li", "", e)));
 }
 $("btn-log").addEventListener("click", () => { renderLog(); $("log").showModal(); });
@@ -1129,23 +1140,23 @@ $("log-copy").addEventListener("click", async () => {
   const cur = current();
   if (!cur) return;
   await copy(await invoke("diagnostic", { id: cur.id }));
-  toast("Diagnostic copié : collez-le dans un message");
+  toast(t("Diagnostic copié : collez-le dans un message"));
 });
 
 // ---- Updates (GitHub releases) ----
 let update = null;
 function showUpdate(u) {
   update = u;
-  $("update-text").textContent = `UberConnector ${u.version} est disponible (vous avez la ${appVersion}).`;
+  $("update-text").textContent = t("UberConnector {version} est disponible (vous avez la {current}).", { version: u.version, current: appVersion });
   $("update-go").disabled = false;
   $("update-notes").hidden = !u.notes.trim();
   $("update-bar").hidden = false;
 }
 function installUpdate() {
   $("update-go").disabled = true;
-  $("update-text").textContent = `Mise à jour vers ${update.version} : arrêt du moteur…`;
+  $("update-text").textContent = t("Mise à jour vers {version} : arrêt du moteur…", { version: update.version });
   invoke("install_update").catch((err) => {
-    $("update-text").textContent = `Mise à jour impossible : ${err}`;
+    $("update-text").textContent = t("Mise à jour impossible : {err}", { err });
     $("update-go").disabled = false;
   });
 }
@@ -1157,37 +1168,42 @@ invoke("app_version").then((v) => {
 listen("update", ({ payload }) => showUpdate(payload));
 listen("update-progress", ({ payload: [done, total] }) => {
   const pct = total ? ` ${Math.floor((done * 100) / total)} %` : "";
-  $("update-text").textContent = `Téléchargement de la version ${update.version}…${pct}`;
+  $("update-text").textContent = t("Téléchargement de la version {version}…{pct}", { version: update.version, pct });
 });
 $("update-go").addEventListener("click", installUpdate);
 $("update-later").addEventListener("click", () => ($("update-bar").hidden = true));
 $("update-notes").addEventListener("click", () =>
-  ask({ title: `Nouveautés de la version ${update.version}`, text: update.notes, ok: "Mettre à jour", run: async () => installUpdate() })
+  ask({ title: t("Nouveautés de la version {version}", { version: update.version }), text: update.notes, ok: t("Mettre à jour"), run: async () => installUpdate() })
 );
 $("btn-check-update").addEventListener("click", async () => {
   const b = $("btn-check-update");
   b.disabled = true;
-  $("update-result").textContent = "· recherche…";
+  $("update-result").textContent = t("· recherche…");
   try {
     const u = await invoke("check_update");
     if (u) {
-      $("update-result").textContent = `· version ${u.version} disponible`;
+      $("update-result").textContent = t("· version {version} disponible", { version: u.version });
       showUpdate(u);
     } else {
-      $("update-result").textContent = "· vous avez la dernière version";
+      $("update-result").textContent = t("· vous avez la dernière version");
     }
   } catch (err) {
-    $("update-result").textContent = `· impossible de vérifier : ${err}`;
+    $("update-result").textContent = t("· impossible de vérifier : {err}", { err });
   } finally {
     b.disabled = false;
   }
 });
 
-listen("state", (e) => render(e.payload));
+// Rendered once the language is known and the first state is shown.
+listen("state", (e) => state && render(e.payload));
 listen("notice", ({ payload }) => toast(payload));
 // Click on a Windows notification: show its salon.
 listen("select", ({ payload: id }) => select(id));
-invoke("get_state").then(async (s) => {
+invoke("ui_lang").then(async (lang) => {
+  setLang(lang);
+  translatePage(document.body);
+  setCollapsed(store.get("collapsed") === "1");
+  const s = await invoke("get_state");
   // Lines received before this page loaded (e.g. window reopened from the tray).
   for (const id of s.settings.connected) chats[id] = await invoke("get_chat", { id });
   render(s);

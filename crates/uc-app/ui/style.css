@@ -90,6 +90,7 @@ h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: u
 .input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px; width: 100%; }
 .input:focus { outline: none; border-color: var(--accent); }
 textarea.input { resize: vertical; }
+select.input option { background: var(--surface); color: var(--text); }
 
 /* Banners & toast */
 .banner { margin: 12px 20px 0; padding: 10px 14px; border-radius: 8px; background: color-mix(in srgb, var(--bad) 14%, var(--surface)); border: 1px solid color-mix(in srgb, var(--bad) 45%, transparent); }

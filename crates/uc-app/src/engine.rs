@@ -2,6 +2,7 @@
 //! `uc-helper.exe` (UAC prompt on activation, loopback JSON-lines channel,
 //! see `uc_core::ipc`). Several salons can be connected at once.
 
+use crate::i18n::{tr, trf};
 use crate::settings::{self, Settings};
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -415,10 +416,10 @@ impl Engine {
     pub async fn create_salon(self: &Arc<Self>, name: &str) -> Result<String> {
         let name = name.trim();
         if name.is_empty() {
-            bail!("donnez un nom au salon");
+            bail!(tr!("donnez un nom au salon", "give the room a name"));
         }
         let salon = salons::create(&self.me, name);
-        self.with_busy("Publication du salon…", async {
+        self.with_busy(tr!("Publication du salon…", "Publishing the room…"), async {
             self.directory().await?.publish(&self.me, &salon).await
         })
         .await?;
@@ -430,7 +431,7 @@ impl Engine {
 
     pub async fn join_invite(self: &Arc<Self>, code: &str) -> Result<String> {
         let salon = self
-            .with_busy("Recherche de l'invitation…", async {
+            .with_busy(tr!("Recherche de l'invitation…", "Looking up the invitation…"), async {
                 self.directory().await?.resolve(&self.me, code).await
             })
             .await?;
@@ -508,7 +509,7 @@ impl Engine {
             return Ok(());
         }
         if text.chars().count() > uc_core::chat::MAX_TEXT {
-            bail!("message trop long ({} caractères maximum)", uc_core::chat::MAX_TEXT);
+            bail!(trf!("message trop long ({} caractères maximum)", "message too long ({} characters maximum)", uc_core::chat::MAX_TEXT));
         }
         self.inner.lock().unwrap().send(Command::Say { salon_id: id.to_string(), text: text.to_string() });
         Ok(())
@@ -633,7 +634,7 @@ impl Engine {
     pub fn forget(&self, id: &str) -> Result<()> {
         let me = self.me.public_key_hex();
         if self.inner.lock().unwrap().salons.iter().any(|s| s.id == id && s.owner == me && !s.deleted) {
-            bail!("vous êtes propriétaire de ce salon : supprimez-le plutôt");
+            bail!(tr!("vous êtes propriétaire de ce salon : supprimez-le plutôt", "you own this room: delete it instead"));
         }
         self.disconnect(id);
         self.update(|i| i.salons.retain(|s| s.id != id));
@@ -650,7 +651,7 @@ impl Engine {
             .iter()
             .find(|s| s.id == id)
             .cloned()
-            .context("salon inconnu")?;
+            .context(tr!("salon inconnu", "unknown room"))?;
         edit(&mut salon);
         self.with_busy(busy, async { self.directory().await?.publish(&self.me, &salon).await })
             .await?;
@@ -668,18 +669,18 @@ impl Engine {
     pub async fn rename(&self, id: &str, name: &str) -> Result<()> {
         let name = name.trim().to_string();
         if name.is_empty() {
-            bail!("le nom ne peut pas être vide");
+            bail!(tr!("le nom ne peut pas être vide", "the name cannot be empty"));
         }
-        self.owner_edit(id, "Renommage…", |s| s.name = name).await
+        self.owner_edit(id, tr!("Renommage…", "Renaming…"), |s| s.name = name).await
     }
 
     pub async fn set_salon_avatar(&self, id: &str, avatar: &str) -> Result<()> {
         let avatar = avatar.trim().chars().take(72).collect::<String>();
-        self.owner_edit(id, "Mise à jour de l'avatar du salon…", |s| s.avatar = avatar).await
+        self.owner_edit(id, tr!("Mise à jour de l'avatar du salon…", "Updating the room avatar…"), |s| s.avatar = avatar).await
     }
 
     pub async fn delete(&self, id: &str) -> Result<()> {
-        self.owner_edit(id, "Suppression du salon…", |s| s.deleted = true).await?;
+        self.owner_edit(id, tr!("Suppression du salon…", "Deleting the room…"), |s| s.deleted = true).await?;
         self.disconnect(id);
         Ok(())
     }
@@ -706,13 +707,13 @@ impl Engine {
         let (id, name) = (s.id.clone(), s.name.clone());
         let me_banned = s.banned.contains(&self.me.id);
         let lost = if s.deleted {
-            Some(format!("« {name} » a été supprimé par son propriétaire"))
+            Some(trf!("« {name} » a été supprimé par son propriétaire", "\"{name}\" was deleted by its owner"))
         } else if me_banned {
-            Some(format!("Vous avez été banni de « {name} »"))
+            Some(trf!("Vous avez été banni de « {name} »", "You were banned from \"{name}\""))
         } else if s.pending {
-            Some(format!("« {name} » demande maintenant une validation : vous êtes en salle d'attente"))
+            Some(trf!("« {name} » demande maintenant une validation : vous êtes en salle d'attente", "\"{name}\" now requires approval: you are in the waiting room"))
         } else if s.key_lost {
-            Some(format!("« {name} » a changé de clé sans vous la transmettre : demandez le nouveau code d'invitation"))
+            Some(trf!("« {name} » a changé de clé sans vous la transmettre : demandez le nouveau code d'invitation", "\"{name}\" changed its key without passing it to you: ask for the new invite code"))
         } else {
             None
         };
@@ -756,7 +757,7 @@ impl Engine {
     ) -> Result<usize> {
         let mut salon = self.salon(id)?;
         if !salon.can_moderate(&self.me) {
-            bail!("seuls le propriétaire et les modérateurs peuvent faire ça");
+            bail!(tr!("seuls le propriétaire et les modérateurs peuvent faire ça", "only the owner and moderators can do that"));
         }
         edit(&mut salon, &self.me)?;
         let sent = self
@@ -801,28 +802,28 @@ impl Engine {
     }
 
     fn salon(&self, id: &str) -> Result<Salon> {
-        self.inner.lock().unwrap().salons.iter().find(|s| s.id == id).cloned().context("salon inconnu")
+        self.inner.lock().unwrap().salons.iter().find(|s| s.id == id).cloned().context(tr!("salon inconnu", "unknown room"))
     }
 
     /// Bans a member: refused by the chat, then the key and invite change.
     pub async fn ban(&self, id: &str, member: &str) -> Result<usize> {
-        self.moderate(id, "Bannissement et changement de clé…", true, |s, me| {
+        self.moderate(id, tr!("Bannissement et changement de clé…", "Banning and changing the key…"), true, |s, me| {
             if member == me.id || s.owner.starts_with(member) {
-                bail!("impossible de bannir ce membre");
+                bail!(tr!("impossible de bannir ce membre", "this member cannot be banned"));
             }
             if s.is_owned_by(me) {
                 if s.owner_banned.len() >= uc_core::salons::MAX_OWNER_BANS {
-                    bail!("liste de bannis pleine");
+                    bail!(tr!("liste de bannis pleine", "the ban list is full"));
                 }
                 s.owner_banned.push(member.to_string());
                 // A banned moderator loses the role.
                 s.mods.retain(|pk| !pk.starts_with(member));
             } else {
                 if s.mods.iter().any(|pk| pk.starts_with(member)) {
-                    bail!("seul le propriétaire peut bannir un modérateur");
+                    bail!(tr!("seul le propriétaire peut bannir un modérateur", "only the owner can ban a moderator"));
                 }
                 if s.my_banned.len() >= uc_core::salons::MAX_MOD_BANS {
-                    bail!("liste de bannis pleine");
+                    bail!(tr!("liste de bannis pleine", "the ban list is full"));
                 }
                 s.my_banned.push(member.to_string());
             }
@@ -835,10 +836,10 @@ impl Engine {
     }
 
     pub async fn unban(&self, id: &str, member: &str) -> Result<()> {
-        self.moderate(id, "Levée du bannissement…", false, |s, me| {
+        self.moderate(id, tr!("Levée du bannissement…", "Lifting the ban…"), false, |s, me| {
             let listed = if s.is_owned_by(me) { &mut s.owner_banned } else { &mut s.my_banned };
             if !listed.iter().any(|b| b == member) {
-                bail!("ce bannissement a été prononcé par quelqu'un d'autre");
+                bail!(tr!("ce bannissement a été prononcé par quelqu'un d'autre", "this ban was issued by someone else"));
             }
             listed.retain(|b| b != member);
             s.banned.retain(|b| b != member);
@@ -850,26 +851,26 @@ impl Engine {
 
     /// New access key and invite code (e.g. after the code leaked).
     pub async fn regenerate(&self, id: &str) -> Result<usize> {
-        self.moderate(id, "Nouveau code et nouvelle clé…", true, |_, _| Ok(())).await
+        self.moderate(id, tr!("Nouveau code et nouvelle clé…", "New code and new key…"), true, |_, _| Ok(())).await
     }
 
     /// Owner: grants or removes the moderator role.
     pub async fn set_moderator(&self, id: &str, member: &str, on: bool) -> Result<()> {
         let salon = self.salon(id)?;
         if !salon.is_owned_by(&self.me) {
-            bail!("seul le propriétaire peut nommer des modérateurs");
+            bail!(tr!("seul le propriétaire peut nommer des modérateurs", "only the owner can appoint moderators"));
         }
         let pk = salon
             .roster
             .iter()
             .find(|m| m.id == member)
             .map(|m| m.pk.clone())
-            .context("membre inconnu : il doit avoir été connecté au chat en même temps que vous")?;
-        self.moderate(id, "Mise à jour des modérateurs…", false, |s, _| {
+            .context(tr!("membre inconnu : il doit avoir été connecté au chat en même temps que vous", "unknown member: they must have been in the chat at the same time as you"))?;
+        self.moderate(id, tr!("Mise à jour des modérateurs…", "Updating moderators…"), false, |s, _| {
             s.mods.retain(|m| *m != pk);
             if on {
                 if s.mods.len() >= uc_core::salons::MAX_MODS {
-                    bail!("{} modérateurs maximum", uc_core::salons::MAX_MODS);
+                    bail!(trf!("{} modérateurs maximum", "{} moderators maximum", uc_core::salons::MAX_MODS));
                 }
                 s.mods.push(pk);
             }
@@ -883,9 +884,13 @@ impl Engine {
     /// Turning it on changes the key: the code alone gave it until now.
     pub async fn set_gated(&self, id: &str, on: bool) -> Result<usize> {
         if !self.salon(id)?.is_owned_by(&self.me) {
-            bail!("seul le propriétaire peut changer l'accès au salon");
+            bail!(tr!("seul le propriétaire peut changer l'accès au salon", "only the owner can change access to the room"));
         }
-        let busy = if on { "Activation de la validation : nouvelle clé distribuée aux membres…" } else { "Ouverture du salon…" };
+        let busy = if on {
+            tr!("Activation de la validation : nouvelle clé distribuée aux membres…", "Enabling approval: handing the new key to members…")
+        } else {
+            tr!("Ouverture du salon…", "Opening the room…")
+        };
         self.moderate(id, busy, on, |s, _| {
             s.gated = on;
             Ok(())
@@ -903,8 +908,8 @@ impl Engine {
             .knocks
             .get(id)
             .and_then(|l| l.iter().find(|k| k.id == member).cloned())
-            .context("cette demande n'est plus en attente")?;
-        self.with_busy(&format!("Validation de {}…", knock.name), async {
+            .context(tr!("cette demande n'est plus en attente", "this request is no longer pending"))?;
+        self.with_busy(&trf!("Validation de {}…", "Admitting {}…", knock.name), async {
             self.directory().await?.admit(&self.me, &mut salon, &knock).await
         })
         .await?;
@@ -954,7 +959,7 @@ impl Engine {
                 }
             });
             self.persist();
-            let _ = self.app.emit("notice", format!("Vous avez été accepté dans « {name} »"));
+            let _ = self.app.emit("notice", trf!("Vous avez été accepté dans « {name} »", "You were admitted to \"{name}\""));
             self.connect(id).await;
         }
     }
@@ -992,9 +997,9 @@ impl Engine {
                                     .collect()
                             };
                             if !fresh.is_empty() {
-                                let _ = self.app.emit("notice", format!("Quelqu'un attend une validation dans « {} »", s.name));
-                                let title = format!("Salle d'attente de « {} »", s.name);
-                                let body = format!("{} attend votre validation", fresh.join(", "));
+                                let _ = self.app.emit("notice", trf!("Quelqu'un attend une validation dans « {} »", "Someone is waiting for approval in \"{}\"", s.name));
+                                let title = trf!("Salle d'attente de « {} »", "Waiting room of \"{}\"", s.name);
+                                let body = trf!("{} attend votre validation", "{} is waiting for your approval", fresh.join(", "));
                                 self.notify(|c| c.notify_knock, &s.id, &title, &body);
                             }
                             self.update(|i| {
@@ -1046,7 +1051,7 @@ impl Engine {
     pub fn save(&self, mut new: Settings) -> Result<()> {
         new.name = new.name.trim().chars().take(24).collect();
         if new.name.is_empty() {
-            bail!("le pseudo ne peut pas être vide");
+            bail!(tr!("le pseudo ne peut pas être vide", "the nickname cannot be empty"));
         }
         new.relays.retain(|r| !r.trim().is_empty());
         let autostart_changed = {
@@ -1061,6 +1066,7 @@ impl Engine {
         }
         self.update(|i| {
             let profile_changed = i.settings.name != new.name || i.settings.avatar != new.avatar;
+            crate::i18n::set(&new.lang);
             i.settings = new;
             // Applied live by every connected salon.
             if profile_changed {
@@ -1095,16 +1101,16 @@ impl Engine {
 
         let (stream, _) = tokio::time::timeout(Duration::from_secs(30), listener.accept())
             .await
-            .context("le moteur ne répond pas")??;
+            .context(tr!("le moteur ne répond pas", "the engine is not responding"))??;
         let (r, mut w) = stream.into_split();
         let mut lines = BufReader::new(r).lines();
         let hello = tokio::time::timeout(Duration::from_secs(10), lines.next_line())
             .await
-            .context("le moteur ne répond pas")??
-            .context("moteur déconnecté")?;
+            .context(tr!("le moteur ne répond pas", "the engine is not responding"))??
+            .context(tr!("moteur déconnecté", "engine disconnected"))?;
         match serde_json::from_str::<Event>(&hello)? {
             Event::Hello { token: t } if t == token => {}
-            _ => bail!("connexion inattendue sur le canal du moteur"),
+            _ => bail!(tr!("connexion inattendue sur le canal du moteur", "unexpected connection on the engine channel")),
         }
 
         let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
@@ -1170,7 +1176,7 @@ impl Engine {
                         (keep, mention)
                     };
                     if let Some(salon) = mention {
-                        let title = format!("{} vous mentionne dans « {salon} »", line.name);
+                        let title = trf!("{} vous mentionne dans « {} »", "{} mentions you in \"{}\"", line.name, salon);
                         me.notify(|s| s.notify_mention, &salon_id, &title, &line.text);
                     }
                     if keep {
@@ -1232,7 +1238,7 @@ impl Engine {
                     me.persist();
                 }
                 for (salon_id, salon, name) in arrivals {
-                    me.notify(|s| s.notify_online, &salon_id, &format!("{name} est en ligne"), &format!("dans « {salon} »"));
+                    me.notify(|s| s.notify_online, &salon_id, &trf!("{name} est en ligne", "{name} is online"), &trf!("dans « {salon} »", "in \"{salon}\""));
                 }
             }
             me.update(|i| {
@@ -1242,7 +1248,7 @@ impl Engine {
                     i.tx = None;
                     i.statuses.clear();
                     i.chats.clear();
-                    i.error = Some("Le moteur s'est arrêté (voir uc-data\\uc-helper.log)".into());
+                    i.error = Some(tr!("Le moteur s'est arrêté (voir uc-data\\uc-helper.log)", "The engine stopped (see uc-data\\uc-helper.log)").into());
                 }
             });
         });
@@ -1336,7 +1342,7 @@ fn helper_path() -> Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let p = exe.with_file_name("uc-helper.exe");
     if !p.exists() {
-        bail!("uc-helper.exe introuvable à côté de l'application");
+        bail!(tr!("uc-helper.exe introuvable à côté de l'application", "uc-helper.exe not found next to the application"));
     }
     Ok(p)
 }
@@ -1367,9 +1373,9 @@ fn elevate(exe: &Path, args: &str) -> Result<()> {
         if ShellExecuteExW(&mut info) == 0 {
             let err = GetLastError();
             if err == 1223 {
-                bail!("Autorisation administrateur refusée");
+                bail!(tr!("Autorisation administrateur refusée", "Administrator permission denied"));
             }
-            bail!("impossible de lancer le moteur (erreur Windows {err})");
+            bail!(trf!("impossible de lancer le moteur (erreur Windows {err})", "cannot start the engine (Windows error {err})"));
         }
         if !info.hProcess.is_null() {
             CloseHandle(info.hProcess);

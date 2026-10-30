@@ -212,6 +212,14 @@
   <dialog id="settings" class="modal">
     <form id="settings-form" method="dialog">
       <h2>Réglages</h2>
+      <label class="field">
+        <span>Langue</span>
+        <select id="set-lang" class="input">
+          <option value="">Automatique (langue de Windows)</option>
+          <option value="fr">Français</option>
+          <option value="en">English</option>
+        </select>
+      </label>
       <label class="check">
         <input type="checkbox" id="set-autostart">
         <span>Lancer au démarrage de Windows<small class="muted">L'application reprend l'état activé/désactivé et les salons de la dernière fois.</small></span>
@@ -307,6 +315,7 @@
 
   <div id="menu" class="menu" hidden></div>
   <div id="toast" class="toast" hidden></div>
+  <script src="i18n.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

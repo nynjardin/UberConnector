@@ -5,6 +5,7 @@
 //! version is started. `uc-data` (identity, salons, settings) is never
 //! touched. Any failure puts the previous files back.
 
+use crate::i18n::{tr, trf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -82,7 +83,7 @@ pub fn check() -> Result<Option<Update>> {
     if let Err(ureq::Error::StatusCode(404)) = resp {
         return Ok(None);
     }
-    let rel: Release = resp.as_mut().map_err(|e| anyhow::anyhow!("{e}"))?.body_mut().read_json().context("réponse de GitHub illisible")?;
+    let rel: Release = resp.as_mut().map_err(|e| anyhow::anyhow!("{e}"))?.body_mut().read_json().context(tr!("réponse de GitHub illisible", "unreadable answer from GitHub"))?;
     if rel.draft || rel.prerelease || !is_newer(&rel.tag_name, CURRENT) {
         return Ok(None);
     }
@@ -92,7 +93,7 @@ pub fn check() -> Result<Option<Update>> {
         .iter()
         .find(|a| a.name.eq_ignore_ascii_case(&format!("UberConnector-{version}.zip")))
         .or_else(|| rel.assets.iter().find(|a| a.name.starts_with("UberConnector") && a.name.ends_with(".zip")))
-        .with_context(|| format!("la version {version} n'a pas de zip à télécharger"))?;
+        .with_context(|| trf!("la version {version} n'a pas de zip à télécharger", "version {version} has no zip to download"))?;
     Ok(Some(Update {
         version,
         notes: rel.body.unwrap_or_default(),
@@ -124,37 +125,37 @@ pub fn install(u: &Update, work: &Path, progress: impl Fn(u64, u64)) -> Result<P
 
 fn download(u: &Update, to: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
     if u.size > MAX_ZIP {
-        bail!("mise à jour anormalement grosse ({} Mo)", u.size >> 20);
+        bail!(trf!("mise à jour anormalement grosse ({} Mo)", "abnormally large update ({} MB)", u.size >> 20));
     }
     let mut resp = agent()
         .get(&u.url)
         .header("User-Agent", &format!("UberConnector/{CURRENT}"))
         .call()
-        .map_err(|e| anyhow::anyhow!("téléchargement : {e}"))?;
+        .map_err(|e| anyhow::anyhow!(trf!("téléchargement : {e}", "download: {e}")))?;
     let mut reader = resp.body_mut().as_reader();
     let mut file = std::fs::File::create(to)?;
     let mut hash = Sha256::new();
     let (mut done, mut buf) = (0u64, vec![0u8; 64 * 1024]);
     loop {
-        let n = reader.read(&mut buf).context("téléchargement interrompu")?;
+        let n = reader.read(&mut buf).context(tr!("téléchargement interrompu", "download interrupted"))?;
         if n == 0 {
             break;
         }
         done += n as u64;
         if done > MAX_ZIP {
-            bail!("téléchargement anormalement gros");
+            bail!(tr!("téléchargement anormalement gros", "abnormally large download"));
         }
         hash.update(&buf[..n]);
         file.write_all(&buf[..n])?;
         progress(done, u.size);
     }
     if u.size != 0 && done != u.size {
-        bail!("téléchargement incomplet ({done} octets sur {})", u.size);
+        bail!(trf!("téléchargement incomplet ({} octets sur {})", "incomplete download ({} of {} bytes)", done, u.size));
     }
     if let Some(want) = u.digest.as_deref().and_then(|d| d.strip_prefix("sha256:")) {
         let got = hex::encode(hash.finalize());
         if !got.eq_ignore_ascii_case(want) {
-            bail!("le fichier téléchargé ne correspond pas à celui publié (empreinte SHA-256 différente)");
+            bail!(tr!("le fichier téléchargé ne correspond pas à celui publié (empreinte SHA-256 différente)", "the downloaded file does not match the published one (different SHA-256)"));
         }
     }
     Ok(())
@@ -163,7 +164,7 @@ fn download(u: &Update, to: &Path, progress: impl Fn(u64, u64)) -> Result<()> {
 /// Unpacks into `to`, without the zip's top folder ("UberConnector/") and
 /// never `uc-data`. Returns the relative paths of the files.
 fn unpack(zip_path: &Path, to: &Path) -> Result<Vec<PathBuf>> {
-    let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path)?).context("zip de mise à jour illisible")?;
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(zip_path)?).context(tr!("zip de mise à jour illisible", "unreadable update zip"))?;
     let mut files = vec![];
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
@@ -202,7 +203,7 @@ fn swap(app_dir: &Path, staged: &Path, files: &[PathBuf]) -> Result<()> {
             let old = if target.exists() {
                 let old = old_name(&target);
                 let _ = std::fs::remove_file(&old);
-                std::fs::rename(&target, &old).with_context(|| format!("{} est verrouillé", rel.display()))?;
+                std::fs::rename(&target, &old).with_context(|| trf!("{} est verrouillé", "{} is locked", rel.display()))?;
                 Some(old)
             } else {
                 None
