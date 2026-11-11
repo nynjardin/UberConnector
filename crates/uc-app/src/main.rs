@@ -309,13 +309,23 @@ fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
         })
         .build(app)?;
 
+    let app = app.clone();
     engine.set_on_change(move |s| {
-        // Also follows a language change in the settings.
-        let _ = open.set_text(tr!("Ouvrir UberConnector", "Open UberConnector"));
-        let _ = toggle.set_text(tr!("Activé", "Enabled"));
-        let _ = quit.set_text(tr!("Quitter", "Quit"));
-        let _ = toggle.set_checked(s.phase != Phase::Off);
-        let _ = tray.set_tooltip(Some(format!("UberConnector : {}", phase_label(s))));
+        // Menu and tray calls made from another thread WAIT for the main
+        // thread. The engine calls us from its own tasks (every status of the
+        // helper) while holding its observer lock, and a command running on
+        // the main thread (leaving a salon…) wants that same lock: waiting
+        // here froze the app for good. So the work is only queued.
+        let (on, tip) = (s.phase != Phase::Off, format!("UberConnector : {}", phase_label(s)));
+        let (open, toggle, quit, tray) = (open.clone(), toggle.clone(), quit.clone(), tray.clone());
+        let _ = app.run_on_main_thread(move || {
+            // Also follows a language change in the settings.
+            let _ = open.set_text(tr!("Ouvrir UberConnector", "Open UberConnector"));
+            let _ = toggle.set_text(tr!("Activé", "Enabled"));
+            let _ = quit.set_text(tr!("Quitter", "Quit"));
+            let _ = toggle.set_checked(on);
+            let _ = tray.set_tooltip(Some(tip));
+        });
     });
     Ok(())
 }

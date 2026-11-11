@@ -96,8 +96,11 @@ impl EasyTier {
             let tcp: Vec<String> = cfg.open_tcp_ports.iter().map(|p| p.to_string()).collect();
             cmd.arg("--no-tun").arg("--tcp-whitelist").args(&tcp).args(["--udp-whitelist", "0"]);
         }
-        if !cfg.relays.is_empty() {
-            cmd.arg("-p").args(cfg.relays);
+        // The list comes from a user-writable file and we run elevated: an
+        // entry must never be read as an option of easytier-core.
+        let relays: Vec<&str> = cfg.relays.iter().map(|r| r.trim()).filter(|r| !r.is_empty() && !r.starts_with('-')).collect();
+        if !relays.is_empty() {
+            cmd.arg("-p").args(relays);
         }
         let child = cmd.spawn().context("lancement de easytier-core")?;
         let job = job::Job::kill_on_close()?;
@@ -117,8 +120,12 @@ impl EasyTier {
             .args(["-p", &self.rpc, "-o", "json"])
             .args(args)
             .creation_flags(CREATE_NO_WINDOW)
-            .output()
-            .await?;
+            .kill_on_drop(true)
+            .output();
+        // Called from the session loop: a stuck CLI must not freeze it.
+        let out = tokio::time::timeout(std::time::Duration::from_secs(5), out)
+            .await
+            .context("easytier-cli ne répond pas")??;
         if !out.status.success() {
             bail!("easytier-cli {:?}: {}", args, String::from_utf8_lossy(&out.stderr).trim());
         }

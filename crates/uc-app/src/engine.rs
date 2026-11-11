@@ -188,6 +188,10 @@ pub struct Engine {
     dir: OnceCell<Arc<Directory>>,
     inner: Mutex<Inner>,
     on_change: Mutex<Option<Box<dyn Fn(&Snapshot) + Send>>>,
+    /// Held by whatever reads a salon, works on the DHT for seconds, then
+    /// writes the salon back (refresh, owner edits, moderation): two of
+    /// them at once would overwrite each other's result.
+    edits: tokio::sync::Mutex<()>,
 }
 
 impl Engine {
@@ -219,6 +223,7 @@ impl Engine {
             me,
             dir: OnceCell::new(),
             on_change: Mutex::new(None),
+            edits: Default::default(),
         }))
     }
 
@@ -644,6 +649,7 @@ impl Engine {
     }
 
     async fn owner_edit(&self, id: &str, busy: &str, edit: impl FnOnce(&mut Salon)) -> Result<()> {
+        let _edit = self.edits.lock().await;
         let mut salon = self
             .inner
             .lock()
@@ -694,6 +700,7 @@ impl Engine {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(8)).await;
             }
+            let _edit = self.edits.lock().await;
             let Some(mut s) = self.inner.lock().unwrap().salons.iter().find(|s| s.id == id).cloned() else { return };
             if let Ok(Refresh::Updated) = dir.refresh(&self.me, &mut s).await {
                 self.apply_refreshed(s);
@@ -756,6 +763,7 @@ impl Engine {
         rotate: bool,
         edit: impl FnOnce(&mut Salon, &Identity) -> Result<()>,
     ) -> Result<usize> {
+        let _edit = self.edits.lock().await;
         let mut salon = self.salon(id)?;
         if !salon.can_moderate(&self.me) {
             bail!(tr!("seuls le propriétaire et les modérateurs peuvent faire ça", "only the owner and moderators can do that"));
@@ -934,6 +942,7 @@ impl Engine {
     /// Newcomer: checks for our admission, and knocks again when `knock`.
     async fn pending_round(self: &Arc<Self>, id: &str, knock: bool) {
         let Ok(dir) = self.directory().await else { return };
+        let edit = self.edits.lock().await;
         let Ok(mut s) = self.salon(id) else { return };
         if !s.pending {
             return;
@@ -960,6 +969,8 @@ impl Engine {
                 }
             });
             self.persist();
+            // Connecting may wait for the UAC prompt: not under the lock.
+            drop(edit);
             let _ = self.app.emit("notice", trf!("Vous avez été accepté dans « {name} »", "You were admitted to \"{name}\""));
             self.connect(id).await;
         }
@@ -1036,8 +1047,11 @@ impl Engine {
     pub async fn refresh_loop(self: Arc<Self>) {
         loop {
             if let Ok(dir) = self.directory().await {
-                let list = self.inner.lock().unwrap().salons.clone();
-                for mut s in list {
+                let ids: Vec<String> = self.inner.lock().unwrap().salons.iter().map(|s| s.id.clone()).collect();
+                for id in ids {
+                    // The salon as it is now, not as it was when the round began.
+                    let _edit = self.edits.lock().await;
+                    let Ok(mut s) = self.salon(&id) else { continue };
                     if let Ok(Refresh::Updated) = dir.refresh(&self.me, &mut s).await {
                         self.apply_refreshed(s);
                     }

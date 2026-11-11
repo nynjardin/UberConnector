@@ -237,6 +237,16 @@ fn pick_vip(id: &str, subnet: u8, others: &[PeerRecord]) -> Ipv4Addr {
         .unwrap()
 }
 
+/// Runs at scope exit, whichever way `run` ends (errors included): tasks
+/// and ports of a session must not outlive it in the helper.
+struct OnDrop<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for OnDrop<F> {
+    fn drop(&mut self) {
+        (self.0)()
+    }
+}
+
 struct PeerState {
     rec: PeerRecord,
     /// Bridge URL EasyTier should dial (dialer side only).
@@ -388,6 +398,10 @@ async fn run(
             }
         })
     };
+    let _stop_dht_check = OnDrop({
+        let h = dht_check.abort_handle();
+        move || h.abort()
+    });
     let public_punch = punch::stun(&sock, STUN_SERVERS).await.ok();
     match public_punch {
         Some(a) => ev(format!("Adresse publique (STUN) : {a}")),
@@ -448,6 +462,10 @@ async fn run(
     let socks5_port = easytier::free_port()?;
     let (chat_tx, mut chat_rx) = mpsc::unbounded_channel();
     let chat = Chat::start(room.chat_key(), &room.id, ident.clone(), cfg.banned.clone(), cfg.profile.clone(), socks5_port, chat_tx, cfg.data_dir.clone(), cfg.game && !easytier::test_no_tun()).await?;
+    let _stop_chat = OnDrop({
+        let c = chat.clone();
+        move || c.stop()
+    });
     let mut chat_profiles: HashMap<String, (String, String)> = HashMap::new();
 
     let et_dir = easytier::find_dir()?;
@@ -509,10 +527,22 @@ async fn run(
     } else {
         (None, "seulement en mode jeu, avec la carte réseau".to_string())
     };
+    let _stop_game_net = OnDrop({
+        let g = game_net.clone();
+        move || {
+            if let Some(g) = &g {
+                g.stop()
+            }
+        }
+    });
     let searching_since = Instant::now();
 
     let (punch_tx, mut punch_rx) = mpsc::unbounded_channel();
     let puncher = Puncher::new(sock, &ident.id, lan_ip, et_port, cfg.use_lan, punch_tx);
+    let _stop_punch = OnDrop({
+        let p = puncher.clone();
+        move || p.stop()
+    });
     if !cfg.use_lan {
         ev("Mode --no-lan : passage forcé par l'adresse publique".into());
     }
@@ -632,6 +662,10 @@ async fn run(
         })
     };
 
+    let _stop_disc = OnDrop({
+        let h = disc_task.abort_handle();
+        move || h.abort()
+    });
     let mut peers: HashMap<String, PeerState> = HashMap::new();
     let mut poked: HashMap<String, Instant> = HashMap::new();
     // Member id -> last record received through Nostr.
@@ -741,7 +775,12 @@ async fn run(
                     if r.vip == vip && r.id < ident.id {
                         ev(format!("Conflit d'IP avec {} : relancez avec --ip", r.name));
                     }
-                    puncher.upsert_peer(&r, &ident.id).await?;
+                    // E.g. our LAN address changed: this member is retried at
+                    // the next read instead of ending the whole session.
+                    if let Err(e) = puncher.upsert_peer(&r, &ident.id).await {
+                        tracing::warn!("perçage : {} ignoré pour l'instant : {e:#}", r.name);
+                        continue;
+                    }
                     let new = !peers.contains_key(&r.id);
                     if new {
                         ev(format!("Découvert : {} ({})", r.name, r.vip));

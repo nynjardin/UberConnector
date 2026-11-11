@@ -199,13 +199,16 @@ fn capture_loop(shared: Arc<Shared>, alive: Arc<AtomicBool>, sock: Socket, ip: I
                 return;
             }
         };
-        let pkt: Vec<u8> = buf[..n].iter().map(|b| unsafe { b.assume_init() }).collect();
+        // Every IP packet of the PC comes through here while a game runs:
+        // looked at in place, nothing is copied.
+        // SAFETY: `recv` initialized the first `n` bytes of `buf`.
+        let pkt: &[u8] = unsafe { std::slice::from_raw_parts(buf.as_ptr().cast::<u8>(), n) };
         if !saw_outgoing && pkt.len() >= 20 && pkt[12..16] == ip.octets() {
             saw_outgoing = true;
             tracing::info!("annonces de jeux : la carte « {name} » voit les paquets sortants");
         }
         let is_local = |a: Ipv4Addr| shared.local.lock().unwrap().contains(&a);
-        if let Some((src, src_port, dst_port, payload)) = outgoing_broadcast(&pkt, is_local) {
+        if let Some((src, src_port, dst_port, payload)) = outgoing_broadcast(pkt, is_local) {
             if seen_sources.insert(src) {
                 tracing::info!("annonces de jeux : annonce de {src} (port {dst_port}) vue sur la carte « {name} »");
             }

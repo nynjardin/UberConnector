@@ -72,16 +72,13 @@ pub fn data_dir() -> PathBuf {
 
 impl Settings {
     pub fn load(dir: &Path) -> Self {
-        std::fs::read_to_string(dir.join("settings.json"))
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default()
+        uc_core::store::read_json(&dir.join("settings.json")).unwrap_or_default()
     }
 
     pub fn save(&self, dir: &Path) {
         let _ = std::fs::create_dir_all(dir);
         if let Ok(t) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(dir.join("settings.json"), t);
+            let _ = uc_core::store::write_atomic(&dir.join("settings.json"), t.as_bytes());
         }
     }
 }

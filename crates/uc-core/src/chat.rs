@@ -118,6 +118,10 @@ pub struct Chat {
     sent: Mutex<VecDeque<(String, u64, String)>>,
     /// "<sender>/<message id>" already shown.
     seen: Mutex<HashSet<String>>,
+    /// Set by `stop`: every link ends.
+    stopped: watch::Sender<bool>,
+    /// Accept and profile loops (they hold the listener, hence the port).
+    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 /// The higher id normally waits to be dialed; it dials itself after this.
@@ -173,15 +177,28 @@ impl Chat {
             asked: Default::default(),
             sent: Default::default(),
             seen: Default::default(),
+            stopped: watch::channel(false).0,
+            tasks: Default::default(),
         });
         let c = chat.clone();
-        tokio::spawn(async move {
+        let accept = tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 tokio::spawn(c.clone().handle(stream, None));
             }
         });
-        tokio::spawn(chat.clone().profile_loop());
+        let profile = tokio::spawn(chat.clone().profile_loop());
+        *chat.tasks.lock().unwrap() = vec![accept.abort_handle(), profile.abort_handle()];
         Ok(chat)
+    }
+
+    /// Ends the session's chat: frees the salon's chat port (a later session
+    /// of the same salon needs it) and closes every link.
+    pub fn stop(&self) {
+        self.stopped.send_replace(true);
+        for t in self.tasks.lock().unwrap().drain(..) {
+            t.abort();
+        }
+        self.conns.lock().unwrap().clear();
     }
 
     pub fn port(&self) -> u16 {
@@ -443,7 +460,16 @@ impl Chat {
                 }
             }
         });
-        while let Ok(Some(m)) = read_line(&mut reader).await {
+        let mut stopped = self.stopped.subscribe();
+        loop {
+            if *stopped.borrow() {
+                break;
+            }
+            let m = tokio::select! {
+                m = read_line(&mut reader) => m,
+                _ = stopped.changed() => break,
+            };
+            let Ok(Some(m)) = m else { break };
             if self.is_banned(&id) {
                 break;
             }
@@ -570,6 +596,28 @@ async fn socks5_connect(proxy: SocketAddr, ip: Ipv4Addr, port: u16) -> Result<Tc
         bail!("socks5 : connexion refusée ({})", rep[1]);
     }
     Ok(s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stopped chat frees its port: the next session of the salon (game
+    /// mode switch, new key) must get the salon's port again.
+    #[tokio::test]
+    async fn stop_frees_the_port() {
+        let dir = std::env::temp_dir().join(format!("uc-chat-test-{}", std::process::id()));
+        let me = Identity::load_or_create(&dir).unwrap();
+        let (_profile_tx, profile) = watch::channel(Profile::default());
+        let (events, _events_rx) = mpsc::unbounded_channel();
+        let chat = Chat::start([1; 32], "salon-test-stop", me, vec![], profile, 1, events, dir.clone(), false).await.unwrap();
+        let port = chat.port();
+        assert!(TcpListener::bind(("0.0.0.0", port)).await.is_err());
+        chat.stop();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(TcpListener::bind(("0.0.0.0", port)).await.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Chat port shared by all members of a salon (20000..=59999).

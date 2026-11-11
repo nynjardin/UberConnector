@@ -32,9 +32,9 @@ pub struct Identity {
 impl Identity {
     pub fn load_or_create(data_dir: &Path) -> Result<Self> {
         let path = data_dir.join("identity.json");
-        let mut ident: Identity = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
+        // An unreadable file is kept as `identity.json.corrupt` (the key in it
+        // owns our salons) before a new identity replaces it.
+        let mut ident: Identity = crate::store::read_json(&path)
             .unwrap_or_else(|| Identity {
                 id: String::new(),
                 name: std::env::var("COMPUTERNAME").unwrap_or_else(|_| "joueur".into()),
@@ -51,7 +51,7 @@ impl Identity {
 
     pub fn save(&self, data_dir: &Path) -> Result<()> {
         std::fs::create_dir_all(data_dir)?;
-        std::fs::write(data_dir.join("identity.json"), serde_json::to_string_pretty(self)?)?;
+        crate::store::write_atomic(&data_dir.join("identity.json"), serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 

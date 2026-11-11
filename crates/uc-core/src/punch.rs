@@ -46,6 +46,16 @@ struct Link {
     last_rx: Option<Instant>,
     /// Last address whose probes we ignored (logged once).
     ignored: Option<SocketAddr>,
+    /// The link's `bridge_loop`, ended with the link.
+    task: Option<tokio::task::AbortHandle>,
+}
+
+impl Drop for Link {
+    fn drop(&mut self) {
+        if let Some(t) = &self.task {
+            t.abort();
+        }
+    }
 }
 
 pub struct Puncher {
@@ -58,6 +68,8 @@ pub struct Puncher {
     links: Mutex<HashMap<String, Link>>,
     by_addr: Mutex<HashMap<SocketAddr, String>>,
     events: mpsc::UnboundedSender<PunchEvent>,
+    /// `recv_loop` and `probe_loop`.
+    tasks: Mutex<Vec<tokio::task::AbortHandle>>,
 }
 
 fn short(id: &str) -> &str {
@@ -104,10 +116,24 @@ impl Puncher {
             links: Default::default(),
             by_addr: Default::default(),
             events,
+            tasks: Default::default(),
         });
-        tokio::spawn(p.clone().recv_loop());
-        tokio::spawn(p.clone().probe_loop());
+        let tasks = vec![
+            tokio::spawn(p.clone().recv_loop()).abort_handle(),
+            tokio::spawn(p.clone().probe_loop()).abort_handle(),
+        ];
+        *p.tasks.lock().unwrap() = tasks;
         p
+    }
+
+    /// Ends the session's punching: without it the tasks (and sockets) live
+    /// on, and their keepalives make members believe our old path is alive.
+    pub fn stop(&self) {
+        for t in self.tasks.lock().unwrap().drain(..) {
+            t.abort();
+        }
+        self.links.lock().unwrap().clear();
+        self.by_addr.lock().unwrap().clear();
     }
 
     pub fn local_port(&self) -> u16 {
@@ -159,9 +185,14 @@ impl Puncher {
             probing_since: Instant::now(),
             last_rx: None,
             ignored: None,
+            task: None,
         };
         self.links.lock().unwrap().insert(rec.id.clone(), link);
-        tokio::spawn(self.clone().bridge_loop(rec.id.clone(), bridge));
+        let task = tokio::spawn(self.clone().bridge_loop(rec.id.clone(), bridge)).abort_handle();
+        match self.links.lock().unwrap().get_mut(&rec.id) {
+            Some(l) => l.task = Some(task),
+            None => task.abort(),
+        }
         Ok(())
     }
 

@@ -98,9 +98,14 @@ pub struct Salon {
 }
 
 impl Salon {
+    /// A malformed key (hand-edited file) gives a key nobody shares rather
+    /// than a panic: the salon simply finds no one.
     fn key_bytes(hex_key: &str) -> [u8; 32] {
         let mut b = [0u8; 32];
-        hex::decode_to_slice(hex_key, &mut b).expect("salon key");
+        if hex::decode_to_slice(hex_key, &mut b).is_err() {
+            tracing::error!("clé de salon invalide dans salons.json");
+            b = [0u8; 32];
+        }
         b
     }
 
@@ -272,15 +277,12 @@ pub fn subnet_for(salon_id: &str) -> u8 {
 }
 
 pub fn load(data_dir: &Path) -> Vec<Salon> {
-    std::fs::read_to_string(data_dir.join("salons.json"))
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
-        .unwrap_or_default()
+    crate::store::read_json(&data_dir.join("salons.json")).unwrap_or_default()
 }
 
 pub fn save(data_dir: &Path, salons: &[Salon]) -> Result<()> {
     std::fs::create_dir_all(data_dir)?;
-    std::fs::write(data_dir.join("salons.json"), serde_json::to_string_pretty(salons)?)?;
+    crate::store::write_atomic(&data_dir.join("salons.json"), serde_json::to_string_pretty(salons)?.as_bytes())?;
     Ok(())
 }
 
@@ -471,6 +473,10 @@ impl Directory {
         let gated = rec.access_key.is_empty();
         let base_key = if rec.base_key.is_empty() { rec.access_key.clone() } else { rec.base_key };
         hex32(&base_key)?;
+        // Anyone holding the code can write this record: check it all.
+        if !gated {
+            hex32(&rec.access_key)?;
+        }
         let mut salon = Salon {
             id: rec.id,
             name: rec.name,
@@ -492,7 +498,7 @@ impl Directory {
             gated,
             pending: gated,
         };
-        self.refresh(me, &mut salon).await?;
+        self.refresh_from(me, &mut salon, true).await?;
         if salon.deleted {
             bail!("ce salon a été supprimé par son propriétaire");
         }
@@ -505,6 +511,14 @@ impl Directory {
     /// Keeps a salon alive in the DHT, applies the owner's and moderators'
     /// latest changes and picks up a rotated access key.
     pub async fn refresh(&self, me: &Identity, salon: &mut Salon) -> Result<Refresh> {
+        self.refresh_from(me, salon, false).await
+    }
+
+    /// `adopt`: the salon was just rebuilt from an invite, so even its owner
+    /// takes the manifest from the DHT. Otherwise the owner's local copy is
+    /// the reference: a DHT read lagging behind (or racing with) an edit must
+    /// not undo a rename, a ban or the gate, then republish the old state.
+    async fn refresh_from(&self, me: &Identity, salon: &mut Salon, adopt: bool) -> Result<Refresh> {
         let before = serde_json::to_string(&*salon)?;
         let base = salon.base_room();
 
@@ -517,12 +531,18 @@ impl Directory {
             if !salon.is_owned_by(me) {
                 let _ = self.dht.put_mutable(item, None).await;
             }
-            salon.name = m.name;
-            salon.deleted = m.deleted;
-            salon.avatar = m.avatar;
-            salon.mods = m.mods;
-            salon.owner_banned = m.banned;
-            salon.gated = m.gated;
+            if adopt || !salon.is_owned_by(me) {
+                salon.name = m.name;
+                salon.deleted = m.deleted;
+                salon.avatar = m.avatar;
+                salon.mods = m.mods;
+                salon.owner_banned = m.banned;
+                salon.gated = m.gated;
+                // Owner recovering its salon: keep announcing its epoch.
+                if salon.is_owned_by(me) {
+                    salon.my_epoch = m.epoch;
+                }
+            }
             let mut best = (m.epoch, salon.owner.clone(), m.key_by_x);
 
             // Moderators' items (only those the owner lists).
