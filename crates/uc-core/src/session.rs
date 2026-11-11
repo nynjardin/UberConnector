@@ -74,6 +74,8 @@ pub struct SessionConfig {
     pub use_lan: bool,
     /// Ask the router to open EasyTier's port (NAT-PMP / UPnP, see `portmap`).
     pub port_map: bool,
+    /// Fixed EasyTier port, forwarded by hand on the router (0 = automatic).
+    pub custom_port: u16,
     pub data_dir: PathBuf,
 }
 
@@ -357,7 +359,9 @@ async fn run(
     let mut salon_cache = SalonCache::load(&cfg.data_dir, &room.id);
     let lan_ip = punch::lan_ipv4();
     let sock = Puncher::bind().await?;
-    let et_port = cache::port_or_free(salon_cache.et_port)?;
+    // A port chosen by the user wins: it is the one forwarded on the router.
+    let et_port = cache::port_or_free(if cfg.custom_port != 0 { cfg.custom_port } else { salon_cache.et_port })?;
+    let custom_port_refused = cfg.custom_port != 0 && et_port != cfg.custom_port;
     salon_cache.et_port = et_port;
     salon_cache.save(&cfg.data_dir, &room.id);
 
@@ -403,6 +407,12 @@ async fn run(
     }
     status.send_modify(|s| s.public_punch = public_punch);
     mark(&status, t0, &mut marks, "stun", "STUN terminé".into());
+    if custom_port_refused {
+        ev(format!(
+            "Port choisi {} indisponible (déjà utilisé, par un autre salon ?) : port {et_port} utilisé à la place",
+            cfg.custom_port
+        ));
+    }
     // Our router opens EasyTier's port: members then join us directly, even
     // where hole punching fails between two networks. Runs while EasyTier
     // starts; our record waits for it (a few ms with NAT-PMP).

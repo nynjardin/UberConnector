@@ -4,6 +4,6 @@ members = ["crates/uc-core", "crates/uc-cli", "crates/uc-app"]
 
 # The ONE version number: bump it for every GitHub release (see README).
 [workspace.package]
-version = "0.1.3"
+version = "0.1.4"
 license = "GPL-3.0-only"
 repository = "https://github.com/nynjardin/UberConnector"

@@ -1087,6 +1087,7 @@ $("btn-settings").addEventListener("click", () => {
   $("set-update-check").checked = s.update_check;
   $("update-result").textContent = "";
   $("set-port-map").checked = s.port_map;
+  $("set-custom-port").value = s.custom_port || "";
   $("set-notify-online").checked = s.notify_online;
   $("set-notify-knock").checked = s.notify_knock;
   $("set-notify-mention").checked = s.notify_mention;
@@ -1104,6 +1105,7 @@ $("settings-form").addEventListener("submit", async (e) => {
     autostart: $("set-autostart").checked,
     update_check: $("set-update-check").checked,
     port_map: $("set-port-map").checked,
+    custom_port: parseInt($("set-custom-port").value, 10) || 0,
     notify_online: $("set-notify-online").checked,
     notify_knock: $("set-notify-knock").checked,
     notify_mention: $("set-notify-mention").checked,

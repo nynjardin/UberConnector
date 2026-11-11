@@ -24,6 +24,9 @@ pub struct Settings {
     pub relays: Vec<String>,
     /// Open EasyTier's port on the router automatically (NAT-PMP / UPnP).
     pub port_map: bool,
+    /// Fixed UDP/TCP port for EasyTier (0 = automatic), for a router without
+    /// UPnP where the user forwards that port by hand.
+    pub custom_port: u16,
     /// Look for a new version on GitHub (at start, then every few hours).
     pub update_check: bool,
     /// Windows notifications, shown only while the window is not in front.
@@ -49,6 +52,7 @@ impl Default for Settings {
             game_salon: None,
             relays: vec![],
             port_map: true,
+            custom_port: 0,
             update_check: true,
             notify_online: true,
             notify_knock: true,

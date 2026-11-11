@@ -25,6 +25,9 @@ pub enum Command {
         /// Open EasyTier's port on the router (NAT-PMP / UPnP).
         #[serde(default = "yes")]
         port_map: bool,
+        /// Fixed EasyTier port (0 = automatic).
+        #[serde(default)]
+        custom_port: u16,
     },
     SetBanned { salon_id: String, banned: Vec<String> },
     /// Game mode: test the virtual LAN of this salon.

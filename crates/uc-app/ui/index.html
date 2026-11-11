@@ -238,6 +238,11 @@
         <input type="checkbox" id="set-port-map">
         <span>Ouvrir automatiquement un port sur la box<small class="muted">Les autres joueurs se connectent alors directement à vous, même quand vos réseaux bloquent la connexion entre eux. Seul le port d'UberConnector est ouvert, et refermé à la déconnexion. Prend effet à la prochaine connexion d'un salon.</small></span>
       </label>
+      <label class="field">
+        <span>Port fixe (box sans UPnP)</span>
+        <input type="number" id="set-custom-port" class="input" min="1024" max="65535" step="1" placeholder="Automatique">
+        <small class="muted">Si votre box ne gère pas l'UPnP, redirigez ce port (UDP et TCP) vers ce PC dans l'interface de la box, puis saisissez-le ici. Laissez vide pour un port choisi automatiquement. Avec plusieurs salons connectés, le premier utilise ce port. Prend effet à la prochaine connexion d'un salon.</small>
+      </label>
       <fieldset class="group">
         <legend>Notifications Windows</legend>
         <p class="muted small group-note">Seulement quand la fenêtre d'UberConnector n'est pas au premier plan.</p>

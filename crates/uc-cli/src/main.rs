@@ -235,6 +235,7 @@ async fn main() -> Result<()> {
         fixed_ip: opts.ip,
         use_lan: !opts.no_lan,
         port_map: true,
+        custom_port: 0,
         data_dir,
     });
     let mut status = session.status.clone();

@@ -55,6 +55,10 @@ const EN = {
   "Démarrer avec le micro coupé": "Start with the microphone muted",
   "Enregistrer": "Save",
   "Langue": "Language",
+  "Port fixe (box sans UPnP)": "Fixed port (router without UPnP)",
+  "Automatique": "Automatic",
+  "Si votre box ne gère pas l'UPnP, redirigez ce port (UDP et TCP) vers ce PC dans l'interface de la box, puis saisissez-le ici. Laissez vide pour un port choisi automatiquement. Avec plusieurs salons connectés, le premier utilise ce port. Prend effet à la prochaine connexion d'un salon.":
+    "If your router has no UPnP, forward this port (UDP and TCP) to this PC in the router's settings, then enter it here. Leave empty for an automatically chosen port. With several rooms connected, the first one uses this port. Takes effect the next time a room connects.",
   "Automatique (langue de Windows)": "Automatic (Windows language)",
   "Lancer au démarrage de Windows": "Start with Windows",
   "L'application reprend l'état activé/désactivé et les salons de la dernière fois.": "The app restores the on/off state and the rooms from last time.",

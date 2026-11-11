@@ -161,6 +161,7 @@ impl Inner {
             access_key: s.access_key.clone(),
             relays: self.settings.relays.clone(),
             port_map: self.settings.port_map,
+            custom_port: self.settings.custom_port,
             game: self.settings.game_salon.as_deref() == Some(salon_id),
             banned: s.banned.clone(),
         })
@@ -1054,6 +1055,9 @@ impl Engine {
             bail!(tr!("le pseudo ne peut pas être vide", "the nickname cannot be empty"));
         }
         new.relays.retain(|r| !r.trim().is_empty());
+        if new.custom_port != 0 && new.custom_port < 1024 {
+            bail!(tr!("le port doit être vide ou compris entre 1024 et 65535", "the port must be empty or between 1024 and 65535"));
+        }
         let autostart_changed = {
             let i = self.inner.lock().unwrap();
             // The switch and connections are driven elsewhere; keep them.

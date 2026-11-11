@@ -95,7 +95,7 @@ pub async fn run(port: u16, token: String, data_dir: PathBuf) -> Result<()> {
                             s.set_banned(banned);
                         }
                     }
-                    Command::Join { salon_id, access_key, relays, game, banned, port_map } => {
+                    Command::Join { salon_id, access_key, relays, game, banned, port_map, custom_port } => {
                         stop(&mut sessions, &salon_id).await;
                         let mut key = [0u8; 32];
                         if hex::decode_to_slice(&access_key, &mut key).is_err() {
@@ -115,6 +115,7 @@ pub async fn run(port: u16, token: String, data_dir: PathBuf) -> Result<()> {
                             fixed_ip: None,
                             use_lan: true,
                             port_map,
+                            custom_port,
                             data_dir: data_dir.clone(),
                         });
                         sessions.insert(salon_id, session);
