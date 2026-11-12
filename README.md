@@ -1,4 +1,4 @@
-<img src="crates/uc-app/icons/icon.png" alt="UberConnector logo" width="96" align="right">
+<p align="center"><img src="crates/uc-app/icons/icon.png" alt="UberConnector logo" width="128"></p>
 
 # UberConnector
 
