@@ -100,6 +100,8 @@ checked after download. The update keeps the user's `uc-data`.
 - `UC_UPDATE_API`: another address instead of GitHub's release API (for
   testing updates against a local server).
 - `UC_TEST_NOTIFY=1`: shows a Windows notification at start.
+- `UC_TEST_NET_CHANGE=<seconds>`: acts as if the network changed after that
+  delay (the session rebuilds itself).
 
 Diagnostic tools (`cargo run -p uc-core --example <name>`):
 `nat_check`, `punch_test`, `nostr_probe`, `portmap_check`, `discovery_probe`.

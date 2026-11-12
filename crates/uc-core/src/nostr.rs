@@ -36,12 +36,12 @@ pub const RELAYS: &[&str] = &[
     "wss://relay.damus.io",
 ];
 /// Ephemeral range (20000-29999): relays forward these without storing them.
-const KIND: u32 = 21_337;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const KIND: u32 = 21_337;
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A lost relay is tried again after this delay.
-const RECONNECT: Duration = Duration::from_secs(30);
+pub(crate) const RECONNECT: Duration = Duration::from_secs(30);
 /// Keeps idle connections open (and finds dead ones).
-const PING_EVERY: Duration = Duration::from_secs(30);
+pub(crate) const PING_EVERY: Duration = Duration::from_secs(30);
 /// We answer the same member's hello at most this often.
 const ANSWER_EVERY: Duration = Duration::from_secs(5);
 
@@ -251,7 +251,7 @@ async fn relay_session(shared: &Shared, url: &str, worked: &mut bool) -> Result<
     }
 }
 
-fn new_key() -> SigningKey {
+pub(crate) fn new_key() -> SigningKey {
     loop {
         if let Ok(k) = SigningKey::from_bytes(&rand::random::<[u8; 32]>()) {
             return k;
@@ -260,7 +260,7 @@ fn new_key() -> SigningKey {
 }
 
 /// NIP-01 event: id = SHA-256 of the canonical serialization, BIP-340 signature.
-fn signed_event(key: &SigningKey, topic: &str, content: &str) -> Value {
+pub(crate) fn signed_event(key: &SigningKey, topic: &str, content: &str) -> Value {
     let pubkey = hex::encode(key.verifying_key().to_bytes());
     let created_at = discovery::now_secs();
     let tags = json!([["t", topic]]);

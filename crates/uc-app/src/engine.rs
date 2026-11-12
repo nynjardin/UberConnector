@@ -192,6 +192,10 @@ pub struct Engine {
     /// writes the salon back (refresh, owner edits, moderation): two of
     /// them at once would overwrite each other's result.
     edits: tokio::sync::Mutex<()>,
+    /// The salon list changed (Nostr topics to listen to).
+    salons_changed: tokio::sync::Notify,
+    /// Salons being refetched after a pushed change (one at a time each).
+    refreshing: Mutex<HashSet<String>>,
 }
 
 impl Engine {
@@ -224,6 +228,8 @@ impl Engine {
             dir: OnceCell::new(),
             on_change: Mutex::new(None),
             edits: Default::default(),
+            salons_changed: Default::default(),
+            refreshing: Default::default(),
         }))
     }
 
@@ -317,6 +323,7 @@ impl Engine {
         let i = self.inner.lock().unwrap();
         i.settings.save(&self.data_dir);
         let _ = salons::save(&self.data_dir, &i.salons);
+        self.salons_changed.notify_one();
     }
 
     async fn directory(&self) -> Result<Arc<Directory>> {
@@ -990,39 +997,97 @@ impl Engine {
             if !watched.is_empty() {
                 if let Ok(dir) = self.directory().await {
                     for s in watched {
-                        let knocks = dir.knocks(s).await;
-                        let ids = |l: &[Knock]| l.iter().map(|k| k.id.clone()).collect::<Vec<_>>();
-                        let changed = self.inner.lock().unwrap().knocks.get(&s.id).is_none_or(|old| ids(old) != ids(&knocks));
-                        if changed {
-                            // Announced once per newcomer: a failed DHT read (empty
-                            // list) must not make the next one look new.
-                            let fresh: Vec<&str> = {
-                                let mut i = self.inner.lock().unwrap();
-                                let i = &mut *i;
-                                knocks
-                                    .iter()
-                                    .filter(|k| {
-                                        let key = (s.id.clone(), k.id.clone());
-                                        !i.knocks_done.contains(&key) && i.knocks_announced.insert(key)
-                                    })
-                                    .map(|k| k.name.as_str())
-                                    .collect()
-                            };
-                            if !fresh.is_empty() {
-                                let _ = self.app.emit("notice", trf!("Quelqu'un attend une validation dans « {} »", "Someone is waiting for approval in \"{}\"", s.name));
-                                let title = trf!("Salle d'attente de « {} »", "Waiting room of \"{}\"", s.name);
-                                let body = trf!("{} attend votre validation", "{} is waiting for your approval", fresh.join(", "));
-                                self.notify(|c| c.notify_knock, &s.id, &title, &body);
-                            }
-                            self.update(|i| {
-                                i.knocks.insert(s.id.clone(), knocks);
-                            });
-                        }
+                        self.check_knocks(&dir, s).await;
                     }
                 }
             }
             round += 1;
             tokio::time::sleep(LOBBY_EVERY).await;
+        }
+    }
+
+    /// Owner or moderator: reads a salon's waiting room, announces newcomers.
+    async fn check_knocks(&self, dir: &Directory, s: &Salon) {
+        let knocks = dir.knocks(s).await;
+        let ids = |l: &[Knock]| l.iter().map(|k| k.id.clone()).collect::<Vec<_>>();
+        let changed = self.inner.lock().unwrap().knocks.get(&s.id).is_none_or(|old| ids(old) != ids(&knocks));
+        if changed {
+            // Announced once per newcomer: a failed DHT read (empty
+            // list) must not make the next one look new.
+            let fresh: Vec<&str> = {
+                let mut i = self.inner.lock().unwrap();
+                let i = &mut *i;
+                knocks
+                    .iter()
+                    .filter(|k| {
+                        let key = (s.id.clone(), k.id.clone());
+                        !i.knocks_done.contains(&key) && i.knocks_announced.insert(key)
+                    })
+                    .map(|k| k.name.as_str())
+                    .collect()
+            };
+            if !fresh.is_empty() {
+                let _ = self.app.emit("notice", trf!("Quelqu'un attend une validation dans « {} »", "Someone is waiting for approval in \"{}\"", s.name));
+                let title = trf!("Salle d'attente de « {} »", "Waiting room of \"{}\"", s.name);
+                let body = trf!("{} attend votre validation", "{} is waiting for your approval", fresh.join(", "));
+                self.notify(|c| c.notify_knock, &s.id, &title, &body);
+            }
+            self.update(|i| {
+                i.knocks.insert(s.id.clone(), knocks);
+            });
+        }
+    }
+
+    /// Background duty: items pushed through Nostr (see `uc_core::push`):
+    /// knocks, admissions and salon changes arrive in about a second
+    /// instead of at the next DHT round. `UC_NO_NOSTR=1` turns it off.
+    pub async fn push_loop(self: Arc<Self>) {
+        if std::env::var_os("UC_NO_NOSTR").is_some() {
+            return;
+        }
+        let dir = loop {
+            match self.directory().await {
+                Ok(d) => break d,
+                Err(_) => tokio::time::sleep(Duration::from_secs(30)).await,
+            }
+        };
+        let mut rx = dir.enable_push().subscribe();
+        loop {
+            let salons = self.inner.lock().unwrap().salons.clone();
+            dir.watch(&salons);
+            tokio::select! {
+                _ = self.salons_changed.notified() => {}
+                ev = rx.recv() => match ev {
+                    Ok(p) => self.on_pushed(&dir, p, &salons),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                },
+            }
+        }
+    }
+
+    fn on_pushed(self: &Arc<Self>, dir: &Arc<Directory>, p: uc_core::push::Pushed, salons: &[Salon]) {
+        use uc_core::push::What;
+        let Some(s) = salons.iter().find(|s| s.id == p.salon_id).cloned() else { return };
+        let me = self.clone();
+        let dir = dir.clone();
+        match p.what {
+            What::Admission { member } if member == self.me.id && s.pending => {
+                tauri::async_runtime::spawn(async move { me.pending_round(&s.id, false).await });
+            }
+            What::Knock if s.gated && !s.pending && s.can_moderate(&self.me) => {
+                tauri::async_runtime::spawn(async move { me.check_knocks(&dir, &s).await });
+            }
+            What::Changed if !s.pending => {
+                if !self.refreshing.lock().unwrap().insert(s.id.clone()) {
+                    return;
+                }
+                tauri::async_runtime::spawn(async move {
+                    me.refresh_one(&s.id).await;
+                    me.refreshing.lock().unwrap().remove(&s.id);
+                });
+            }
+            _ => {}
         }
     }
 

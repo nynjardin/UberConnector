@@ -22,6 +22,7 @@
 //!   encrypted for them, under its own identity key.
 
 use crate::identity::Identity;
+use crate::push::{Push, Watched};
 use crate::room::{self, InviteKeys, Room};
 use anyhow::{Context, Result, bail};
 use futures::future::join_all;
@@ -29,6 +30,7 @@ use mainline::async_dht::AsyncDht;
 use mainline::{Dht, MutableItem};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Keeps the manifest under the ~1000 byte BEP44 limit.
 pub const MAX_MODS: usize = 4;
@@ -118,10 +120,13 @@ impl Salon {
         Room::new(&self.id, &self.access_key_bytes())
     }
 
+    fn base_key_bytes(&self) -> [u8; 32] {
+        Self::key_bytes(if self.base_key.is_empty() { &self.access_key } else { &self.base_key })
+    }
+
     /// Never rotates: reads manifest and moderator items.
     fn base_room(&self) -> Room {
-        let base = if self.base_key.is_empty() { &self.access_key } else { &self.base_key };
-        Room::new(&self.id, &Self::key_bytes(base))
+        Room::new(&self.id, &self.base_key_bytes())
     }
 
     pub fn subnet(&self) -> u8 {
@@ -181,8 +186,7 @@ impl Salon {
 
     /// Waiting room: readable by anyone who was ever invited.
     fn lobby_room(&self) -> Room {
-        let base = if self.base_key.is_empty() { &self.access_key } else { &self.base_key };
-        Room::new(&format!("{}/lobby", self.id), &Self::key_bytes(base))
+        Room::new(&format!("{}/lobby", self.id), &self.base_key_bytes())
     }
 }
 
@@ -331,6 +335,8 @@ pub enum Refresh {
 
 pub struct Directory {
     dht: AsyncDht,
+    /// Instant copies of items through Nostr (see `push`), once enabled.
+    push: std::sync::OnceLock<Arc<Push>>,
 }
 
 impl Directory {
@@ -339,7 +345,7 @@ impl Directory {
         if !dht.bootstrapped().await {
             bail!("impossible de rejoindre la DHT (pas d'accès Internet ?)");
         }
-        Ok(Self { dht })
+        Ok(Self { dht, push: Default::default() })
     }
 
     /// Like `start`, from (and remembering) the DHT nodes known in `data_dir`.
@@ -349,17 +355,59 @@ impl Directory {
             bail!("impossible de rejoindre la DHT (pas d'accès Internet ?)");
         }
         crate::cache::save_dht_nodes(&dht, data_dir).await;
-        Ok(Self { dht })
+        Ok(Self { dht, push: Default::default() })
     }
 
-    async fn put(&self, signer: mainline::SigningKey, salt: Vec<u8>, value: Vec<u8>) -> Result<()> {
+    /// Also listens to the salons' Nostr topics and pushes our deliberate
+    /// writes there. The DHT stays the reference: this only speeds it up.
+    pub fn enable_push(&self) -> Arc<Push> {
+        self.push.get_or_init(Push::start).clone()
+    }
+
+    /// The salons whose pushed items we want (call when the list changes).
+    pub fn watch(&self, salons: &[Salon]) {
+        if let Some(p) = self.push.get() {
+            p.watch(
+                salons
+                    .iter()
+                    .filter(|s| !s.deleted)
+                    .map(|s| Watched { salon_id: s.id.clone(), base_key: s.base_key_bytes(), lobby_key: s.lobby_room().dht_public_key() })
+                    .collect(),
+            );
+        }
+    }
+
+    /// `push`: a deliberate change members should see now, not a keepalive.
+    async fn put(&self, salon: &Salon, push: bool, signer: mainline::SigningKey, salt: Vec<u8>, value: Vec<u8>) -> Result<()> {
         let item = MutableItem::new(signer, &value, now_millis(), Some(&salt));
+        self.put_item(salon, push, item).await
+    }
+
+    async fn put_item(&self, salon: &Salon, push: bool, item: MutableItem) -> Result<()> {
+        if let (true, Some(p)) = (push, self.push.get()) {
+            p.send(&salon.id, &salon.base_key_bytes(), &item);
+        }
         self.dht.put_mutable(item, None).await?;
         Ok(())
     }
 
-    /// Owner only: (re)publishes the manifest and, unless deleted, the invite.
+    /// The most recent of the DHT's copy and the pushed one.
+    async fn get_item(&self, key: &[u8; 32], salt: Option<&[u8]>) -> Option<MutableItem> {
+        let dht = self.dht.get_mutable_most_recent(key, salt).await;
+        let pushed = self.push.get().and_then(|p| p.cached(key, salt));
+        match (dht, pushed) {
+            (Some(d), Some(p)) => Some(if p.seq() > d.seq() { p } else { d }),
+            (d, p) => d.or(p),
+        }
+    }
+
+    /// Owner only: publishes a change to the manifest and, unless deleted,
+    /// the invite.
     pub async fn publish(&self, owner: &Identity, salon: &Salon) -> Result<()> {
+        self.publish_as(owner, salon, true).await
+    }
+
+    async fn publish_as(&self, owner: &Identity, salon: &Salon, push: bool) -> Result<()> {
         if !salon.is_owned_by(owner) {
             bail!("seul le propriétaire peut modifier ce salon");
         }
@@ -378,18 +426,22 @@ impl Directory {
         if value.len() > 990 {
             bail!("trop de modérateurs ou de bannis pour la fiche du salon");
         }
-        self.put(owner.signing_key(), salon.salt(), value).await?;
+        self.put(salon, push, owner.signing_key(), salon.salt(), value).await?;
         self.publish_invite(salon, &salon.invite, salon.deleted).await
     }
 
-    /// Moderator only: (re)publishes our ban list and announced epoch.
+    /// Moderator only: publishes a change to our ban list or announced epoch.
     pub async fn publish_mod(&self, me: &Identity, salon: &Salon) -> Result<()> {
+        self.publish_mod_as(me, salon, true).await
+    }
+
+    async fn publish_mod_as(&self, me: &Identity, salon: &Salon, push: bool) -> Result<()> {
         if !salon.is_mod(me) {
             bail!("vous n'êtes pas modérateur de ce salon");
         }
         let item = ModItem { banned: salon.my_banned.clone(), epoch: salon.my_epoch, key_by_x: me.x25519_public_hex() };
         let value = salon.base_room().encrypt(&serde_json::to_vec(&item)?);
-        self.put(me.signing_key(), salon.mod_salt(), value).await
+        self.put(salon, push, me.signing_key(), salon.mod_salt(), value).await
     }
 
     async fn publish_invite(&self, salon: &Salon, code: &str, revoked: bool) -> Result<()> {
@@ -427,7 +479,7 @@ impl Directory {
         salon.epoch += 1;
         salon.my_epoch = salon.epoch;
         salon.key_lost = false;
-        let sent = self.publish_rekeys(me, salon).await;
+        let sent = self.publish_rekeys(me, salon, true).await;
         self.publish_invite(salon, &old_invite, true).await?;
         if salon.is_owned_by(me) {
             self.publish(me, salon).await?;
@@ -439,7 +491,7 @@ impl Directory {
     }
 
     /// Puts the current key for each roster member (we must be the announcer).
-    async fn publish_rekeys(&self, me: &Identity, salon: &Salon) -> usize {
+    async fn publish_rekeys(&self, me: &Identity, salon: &Salon, push: bool) -> usize {
         let payload = Rekey { epoch: salon.epoch, key: salon.access_key.clone(), invite: salon.invite.clone() };
         let plain = serde_json::to_vec(&payload).unwrap();
         let ctx = salon.rekey_context(salon.epoch);
@@ -450,13 +502,13 @@ impl Directory {
             .filter_map(|m| {
                 let key = me.shared_key(&m.xpk, &ctx).ok()?;
                 let salt = salon.rekey_salt(salon.epoch, &m.id);
-                Some(self.put(me.signing_key(), salt, room::encrypt(&key, &plain)))
+                Some(self.put(salon, push, me.signing_key(), salt, room::encrypt(&key, &plain)))
             });
         join_all(puts).await.into_iter().filter(|r| r.is_ok()).count()
     }
 
     async fn fetch(&self, pk_hex: &str, salt: &[u8]) -> Result<Option<MutableItem>> {
-        Ok(self.dht.get_mutable_most_recent(&hex32(pk_hex)?, Some(salt)).await)
+        Ok(self.get_item(&hex32(pk_hex)?, Some(salt)).await)
     }
 
     /// Looks up an invite code, then reads the salon's current state.
@@ -592,12 +644,12 @@ impl Directory {
 
         // Our own duties: owner/moderator items, keys we handed out, invite.
         if salon.is_owned_by(me) {
-            self.publish(me, salon).await?;
+            self.publish_as(me, salon, false).await?;
         } else if salon.is_mod(me) {
-            self.publish_mod(me, salon).await?;
+            self.publish_mod_as(me, salon, false).await?;
         }
         if salon.my_epoch > 0 && salon.my_epoch == salon.epoch {
-            self.publish_rekeys(me, salon).await;
+            self.publish_rekeys(me, salon, false).await;
         }
         // Lost the key of a gated salon: back to the waiting room.
         if salon.key_lost && salon.gated {
@@ -617,7 +669,7 @@ impl Directory {
         let key = lobby.dht_public_key();
         let futs = (0..LOBBY_SLOTS).map(|i| {
             let s = lobby_salt(i);
-            async move { self.dht.get_mutable_most_recent(&key, Some(&s)).await }
+            async move { self.get_item(&key, Some(&s)).await }
         });
         join_all(futs)
             .await
@@ -653,8 +705,7 @@ impl Directory {
         let lobby = salon.lobby_room();
         let value = lobby.encrypt(&serde_json::to_vec(&knock)?);
         let item = MutableItem::new(lobby.signing_key, &value, now_millis(), Some(&lobby_salt(slot)));
-        self.dht.put_mutable(item, None).await?;
-        Ok(())
+        self.put_item(salon, true, item).await
     }
 
     /// Owner or moderator: newcomers currently waiting (banned ones left out).
@@ -687,7 +738,7 @@ impl Directory {
         // Our X25519 key in clear (authenticated by the BEP44 signature).
         let mut value = hex::decode(me.x25519_public_hex())?;
         value.extend(room::encrypt(&key, &serde_json::to_vec(&payload)?));
-        self.put(me.signing_key(), salon.admit_salt(&knock.id), value).await?;
+        self.put(salon, true, me.signing_key(), salon.admit_salt(&knock.id), value).await?;
         salon.remember(knock.member());
         Ok(())
     }
@@ -713,10 +764,22 @@ impl Directory {
         }
         let by: Vec<String> = std::iter::once(salon.owner.clone()).chain(salon.mods.iter().cloned()).collect();
         let salt = salon.admit_salt(&me.id);
+        // An admission pushed through Nostr is enough: no DHT round trip.
+        let pushed: Vec<MutableItem> = match self.push.get() {
+            Some(p) => by.iter().filter_map(|pk| p.cached(&hex32(pk).ok()?, Some(&salt))).collect(),
+            None => vec![],
+        };
+        if self.take_admission(me, salon, pushed) {
+            return Ok(true);
+        }
         let items = join_all(by.iter().map(|pk| self.fetch(pk, &salt))).await;
+        Ok(self.take_admission(me, salon, items.into_iter().filter_map(|r| r.ok().flatten()).collect()))
+    }
+
+    /// Applies the best valid admission among `items`.
+    fn take_admission(&self, me: &Identity, salon: &mut Salon, items: Vec<MutableItem>) -> bool {
         let best = items
             .into_iter()
-            .filter_map(|r| r.ok().flatten())
             .filter_map(|item| {
                 let v = item.value();
                 let by_x = hex::encode(v.get(..32)?);
@@ -727,12 +790,12 @@ impl Directory {
             // An older admission's key was rotated since.
             .filter(|r| r.epoch >= salon.epoch)
             .max_by_key(|r| r.epoch);
-        let Some(r) = best else { return Ok(false) };
+        let Some(r) = best else { return false };
         salon.access_key = r.key;
         salon.invite = r.invite;
         salon.epoch = r.epoch;
         salon.pending = false;
         salon.key_lost = false;
-        Ok(true)
+        true
     }
 }

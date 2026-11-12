@@ -10,22 +10,40 @@ with the reasoning behind each, so that they can be picked up later.
    rights (virtual adapter, firewall, raw sockets). A scheduled task created
    once, with the user's consent, could start the helper elevated without a
    prompt afterwards. It is the most visible daily friction.
-2. **Finish the Nostr fast path.** Nostr already delivers presence records
-   in about a second. The waiting room (knocks), admissions and "the salon
-   changed" notices still travel through the DHT and take several seconds
-   to tens of seconds. They should go through Nostr too, the DHT staying
-   the fallback.
-3. **Network change during a session.** Going from Wi-Fi to cable, or a
-   public IP change, strands the session until it is restarted: the LAN
-   address is read once at start. The session should notice and rebuild
-   its paths.
-4. **Signed updates.** The updater checks the SHA-256 digest GitHub
+   Caution: the task would start the helper elevated without asking, so
+   whatever can replace `uc-helper.exe` in the app folder (writable by the
+   user, the app being portable) would get administrator rights silently.
+   The helper should be copied to a protected folder (`Program Files`)
+   when the task is created, which complicates updates a little.
+2. **Signed updates.** The updater checks the SHA-256 digest GitHub
    publishes, so it trusts whatever the GitHub account serves. Signing the
    zip with a key kept off GitHub, and checking it in the app, would
    protect users if the account were compromised.
 
 ## Done from this list
 
+- **Nostr fast path for salons** (after 0.2.0): admissions, knocks and
+  salon changes (rename, bans, new key) are also pushed through Nostr as
+  the same signed items the DHT holds (`uc_core::push`). Receivers check
+  the signature and keep the most recent copy, so relays can only drop or
+  replay items. Measured on the real network: an admission reaches the
+  newcomer in 0.3 s (was 20 to 60 s), a rename in 0.3 s plus about 4 s of
+  DHT reading. Only deliberate writes are pushed, never the 20-minute
+  keepalives (two moderators would echo each other).
+- **Network change during a session** (after 0.2.0): the session checks
+  the LAN address every 5 s and the public one by STUN every 2 minutes;
+  a change seen twice in a row rebuilds the session by itself (about 2 s,
+  then members find each other the usual way).
+- **Release build tuning** (after 0.2.0): thin LTO, one codegen unit,
+  symbols stripped.
+- **Fewer `easytier-cli` calls** (after 0.2.0): every second during the
+  first minute of a session, then every 2 seconds.
+- **Network secret off the command line** (after 0.2.0): easytier-core
+  gets it through its environment (`ET_NETWORK_SECRET`), which other
+  programs on the PC cannot read, unlike its command line.
+- **Bridge on loopback** (after 0.2.0): the local socket between EasyTier
+  and the hole-punching path listens on 127.0.0.1, so other machines on the
+  LAN can no longer send to it.
 - **Richer tray icon** (0.2.0): the tray menu lists each connected salon
   with its online players; clicking a salon opens it.
 - **Discreet chat** (0.2.0): a button hides the chat panel, leaving the
@@ -77,16 +95,15 @@ Hence the current design: **Nostr for speed, the DHT for robustness.**
 
 ## Smaller technical leftovers
 
-- The bridge socket is bound to the LAN address instead of 127.0.0.1
-  (check that EasyTier accepts loopback first).
 - Invite codes are accepted from 8 characters and hashed with a plain
-  SHA-256.
-- The salon's network secret is passed on easytier-core's command line.
+  SHA-256 (postponed by choice: changing it invalidates shared codes).
+- A knock reaches moderators in about 4 s and is read in about 4 more:
+  writing it still reads the waiting room's slots first, and the reading
+  side reads all slots from the DHT. Both could use the pushed copies.
+- After a member restarts, EasyTier keeps its previous node for about
+  20 s (the app hides the duplicate line meanwhile).
 - `session::run` is about 700 lines long.
 - No tests for `salons.rs`.
-- No release profile tuning (LTO, strip).
-- `easytier-cli` is run every second per connected salon; every 2 or 3
-  seconds would do.
 - Chat comes back about 12 seconds late after the other side restarts.
 - Core messages (session events, technical log, diagnostic), the invite
   web page and part of the documentation are still French-only.

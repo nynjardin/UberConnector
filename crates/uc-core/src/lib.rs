@@ -10,6 +10,7 @@ pub mod ipc;
 pub mod nostr;
 pub mod portmap;
 pub mod punch;
+pub mod push;
 pub mod room;
 pub mod salons;
 pub mod session;

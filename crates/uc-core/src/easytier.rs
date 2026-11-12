@@ -65,7 +65,9 @@ impl EasyTier {
         let mut cmd = Command::new(dir.join("easytier-core.exe"));
         cmd.current_dir(dir)
             .args(["--network-name", cfg.network_name])
-            .args(["--network-secret", cfg.network_secret])
+            // Not on the command line: any local process can read that of
+            // another process, even an elevated one, but not its environment.
+            .env("ET_NETWORK_SECRET", cfg.network_secret)
             .args(["-i", &cfg.ipv4_cidr])
             .args(["--hostname", cfg.hostname])
             .args(["--machine-id", &cfg.machine_id])

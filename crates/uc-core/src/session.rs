@@ -22,6 +22,12 @@ use tokio::task::JoinHandle;
 const STUN_SERVERS: &[&str] = &["stun.l.google.com:19302", "stun.cloudflare.com:3478"];
 /// How long the UI says "looking for players" before "nobody online".
 const SEARCH_PHASE: Duration = Duration::from_secs(60);
+/// Network change checks (see `watch_network`), and every how many of them
+/// the public address is checked too.
+const NET_CHECK_EVERY: Duration = Duration::from_secs(5);
+const NET_STUN_EVERY: u64 = 24;
+/// While the session starts, EasyTier's peer list is read every second.
+const CLI_FAST_PHASE: Duration = Duration::from_secs(60);
 /// DHT reads: fast while the salon forms, then this often (a newcomer
 /// probing us also triggers a read right away).
 const DISCOVERY_FAST: Duration = Duration::from_secs(10);
@@ -152,11 +158,30 @@ impl Session {
         let (shutdown, shutdown_rx) = oneshot::channel();
         let (ctl, ctl_rx) = mpsc::unbounded_channel();
         let task = tokio::spawn(async move {
-            let r = run(cfg, status_tx.clone(), shutdown_rx, ctl_rx).await;
-            if let Err(e) = &r {
-                status_tx.send_modify(|s| push_event(s, Instant::now(), format!("ERREUR : {e:#}")));
+            let (mut shutdown_rx, mut ctl_rx) = (shutdown_rx, ctl_rx);
+            // Bans received during a session are kept for the next one.
+            let mut banned = cfg.banned.clone();
+            loop {
+                match run(&cfg, &mut banned, status_tx.clone(), &mut shutdown_rx, &mut ctl_rx).await {
+                    Ok(Exit::Stopped) => return Ok(()),
+                    // Everything (addresses, port, paths) is rebuilt by a new
+                    // session, the same way members find each other at start.
+                    Ok(Exit::NetworkChanged(why)) => {
+                        status_tx.send_modify(|s| {
+                            push_event(s, Instant::now(), format!("Réseau changé ({why}) : reconnexion au salon"));
+                            s.timings.clear();
+                        });
+                        tokio::select! {
+                            _ = &mut shutdown_rx => return Ok(()),
+                            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                        }
+                    }
+                    Err(e) => {
+                        status_tx.send_modify(|s| push_event(s, Instant::now(), format!("ERREUR : {e:#}")));
+                        return Err(e);
+                    }
+                }
             }
-            r
         });
         Self { shutdown: Some(shutdown), ctl, status, task }
     }
@@ -331,12 +356,59 @@ async fn sync_connector(et: &EasyTier, p: &mut PeerState) -> Option<String> {
     }
 }
 
+/// How a session ended without error.
+enum Exit {
+    Stopped,
+    /// Our LAN or public address changed: the session must be rebuilt.
+    NetworkChanged(String),
+}
+
+/// Checks the LAN address every few seconds (no packet sent) and the public
+/// one by STUN every 2 minutes. A change seen twice in a row (not a blip)
+/// is sent once, then the task ends.
+async fn watch_network(lan: Ipv4Addr, public: Option<std::net::IpAddr>, tx: oneshot::Sender<String>) {
+    // Test: a fake change after this many seconds.
+    if let Some(secs) = std::env::var("UC_TEST_NET_CHANGE").ok().and_then(|v| v.parse().ok()) {
+        tokio::time::sleep(Duration::from_secs(secs)).await;
+        let _ = tx.send("test UC_TEST_NET_CHANGE".into());
+        return;
+    }
+    let mut tick = tokio::time::interval(NET_CHECK_EVERY);
+    tick.tick().await;
+    let mut suspect: Option<String> = None;
+    for n in 1u64.. {
+        tick.tick().await;
+        let now_lan = punch::lan_ipv4();
+        let mut why = None;
+        // LOCALHOST: no route at the moment (cable out, Wi-Fi switching).
+        if now_lan != lan && now_lan != Ipv4Addr::LOCALHOST {
+            why = Some(format!("adresse locale {lan} → {now_lan}"));
+        } else if let Some(old) = public.filter(|_| n % NET_STUN_EVERY == 0 || suspect.is_some()) {
+            if let Ok(sock) = tokio::net::UdpSocket::bind("0.0.0.0:0").await {
+                if let Ok(a) = punch::stun(&sock, STUN_SERVERS).await {
+                    if a.ip() != old {
+                        why = Some(format!("adresse publique {old} → {}", a.ip()));
+                    }
+                }
+            }
+        }
+        match (why, suspect.is_some()) {
+            (Some(w), true) => {
+                let _ = tx.send(w);
+                return;
+            }
+            (w, _) => suspect = w,
+        }
+    }
+}
+
 async fn run(
-    cfg: SessionConfig,
+    cfg: &SessionConfig,
+    banned: &mut Vec<String>,
     status: watch::Sender<Status>,
-    mut shutdown: oneshot::Receiver<()>,
-    mut ctl_rx: mpsc::UnboundedReceiver<Ctl>,
-) -> Result<()> {
+    shutdown: &mut oneshot::Receiver<()>,
+    ctl_rx: &mut mpsc::UnboundedReceiver<Ctl>,
+) -> Result<Exit> {
     let t0 = Instant::now();
     let ev = |msg: String| status.send_modify(|s| push_event(s, t0, msg));
     let mut marks = HashSet::new();
@@ -461,7 +533,7 @@ async fn run(
 
     let socks5_port = easytier::free_port()?;
     let (chat_tx, mut chat_rx) = mpsc::unbounded_channel();
-    let chat = Chat::start(room.chat_key(), &room.id, ident.clone(), cfg.banned.clone(), cfg.profile.clone(), socks5_port, chat_tx, cfg.data_dir.clone(), cfg.game && !easytier::test_no_tun()).await?;
+    let chat = Chat::start(room.chat_key(), &room.id, ident.clone(), banned.clone(), cfg.profile.clone(), socks5_port, chat_tx, cfg.data_dir.clone(), cfg.game && !easytier::test_no_tun()).await?;
     let _stop_chat = OnDrop({
         let c = chat.clone();
         move || c.stop()
@@ -677,10 +749,26 @@ async fn run(
     let mut paths: HashMap<String, (String, String)> = HashMap::new();
     // Member ids EasyTier is linked with (from its peer list).
     let mut et_linked: HashSet<String> = HashSet::new();
+    let (net_tx, mut net_changed) = oneshot::channel();
+    let net_task = tokio::spawn(watch_network(lan_ip, public_punch.map(|a| a.ip()), net_tx));
+    let _stop_net = OnDrop({
+        let h = net_task.abort_handle();
+        move || h.abort()
+    });
+    let mut net_done = false;
+    let mut exit = Exit::Stopped;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
-            _ = &mut shutdown => break,
+            _ = &mut *shutdown => break,
+            // A finished oneshot must not be polled again.
+            r = &mut net_changed, if !net_done => {
+                net_done = true;
+                if let Ok(why) = r {
+                    exit = Exit::NetworkChanged(why);
+                    break;
+                }
+            }
             Ok(()) = profile.changed() => {
                 let n = my_name();
                 status.send_modify(|s| s.my_name = n);
@@ -689,7 +777,10 @@ async fn run(
                 Ctl::Say(text) => chat.say(&text),
                 Ctl::WantImage(hash) => chat.request_image(&hash),
                 Ctl::SalonChanged => chat.notify_salon_changed(),
-                Ctl::SetBanned(b) => chat.set_banned(b),
+                Ctl::SetBanned(b) => {
+                    *banned = b.clone();
+                    chat.set_banned(b);
+                }
                 Ctl::GameTest => match &game_net {
                     Some(g) => {
                         g.set_name(&my_name());
@@ -876,9 +967,14 @@ async fn run(
                 if dead {
                     poke.notify_one();
                 }
-                // Who relays our traffic to whom (every 5 s: one more CLI call).
+                // easytier-cli costs a process launch: every second while the
+                // session starts (quick feedback), then every 2 s.
                 route_tick += 1;
-                if route_tick % 5 == 1 {
+                if t0.elapsed() > CLI_FAST_PHASE && route_tick % 2 == 0 {
+                    continue;
+                }
+                // Who relays our traffic to whom (every ~6 s: one more CLI call).
+                if route_tick % 6 == 1 {
                     if let Ok(routes) = et.routes().await {
                         let id_of = |h: &str| h.rsplit_once('~').map(|(_, id)| id.to_string());
                         relayed_by = routes
@@ -953,6 +1049,7 @@ async fn run(
                         };
                         Member { id, chat: chat_up, name, avatar, vip: e.ipv4, latency_ms: e.lat_ms, loss: e.loss_rate, path, nat: e.nat_type, relay_via, ping: None }
                     }).collect::<Vec<_>>();
+                    let members = without_ghosts(members, &ident.id);
                     // Relaying member: by id above, shown by its live name.
                     let names: HashMap<String, String> = members.iter().map(|m| (m.id.clone(), m.name.clone())).collect();
                     let mut members: Vec<Member> = members
@@ -1026,9 +1123,54 @@ async fn run(
         pm.close().await;
     }
     ev("Session arrêtée".into());
-    Ok(())
+    Ok(exit)
+}
+
+/// A member that just restarted (or we did) shows twice for about 20 s:
+/// EasyTier keeps the previous node until it times out. Only the "vous"
+/// entry stays for us, and each member keeps its best entry.
+fn without_ghosts(members: Vec<Member>, my_id: &str) -> Vec<Member> {
+    let num = |s: &str| s.trim_end_matches('%').trim().parse::<f32>().unwrap_or(f32::MAX);
+    let worse = |a: &Member, b: &Member| (num(&a.loss), num(&a.latency_ms)) > (num(&b.loss), num(&b.latency_ms));
+    let mut best: HashMap<&str, usize> = HashMap::new();
+    for (i, m) in members.iter().enumerate() {
+        if m.id.is_empty() || (m.id == my_id && m.path != "vous") {
+            continue;
+        }
+        match best.get(m.id.as_str()) {
+            Some(&j) if members[j].path == "vous" || !worse(&members[j], m) => {}
+            _ => {
+                best.insert(&m.id, i);
+            }
+        }
+    }
+    let keep: HashSet<usize> = best.into_values().collect();
+    members.into_iter().enumerate().filter(|(i, m)| m.id.is_empty() || keep.contains(i)).map(|(_, m)| m).collect()
 }
 
 fn profile_name(p: &Profile) -> String {
     p.name.trim().chars().take(32).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(id: &str, path: &str, loss: &str, lat: &str) -> Member {
+        Member { id: id.into(), path: path.into(), loss: loss.into(), latency_ms: lat.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn restarted_members_show_once() {
+        let list = vec![
+            m("me", "vous", "-", "-"),
+            m("bob", "direct", "50.0%", "0.3"),
+            m("me", "relais [relay(2)]", "0.0%", "1000"),
+            m("bob", "direct", "0.0%", "0.2"),
+            m("", "relais", "0.0%", "5"),
+        ];
+        let out = without_ghosts(list, "me");
+        let got: Vec<(&str, &str)> = out.iter().map(|m| (m.id.as_str(), m.loss.as_str())).collect();
+        assert_eq!(got, [("me", "-"), ("bob", "0.0%"), ("", "0.0%")]);
+    }
 }

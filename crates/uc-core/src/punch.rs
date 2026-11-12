@@ -111,7 +111,7 @@ impl Puncher {
             sock: Arc::new(sock),
             my_id: id,
             lan_ip,
-            et_listener: SocketAddr::new(lan_ip.into(), et_port),
+            et_listener: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), et_port),
             use_lan,
             links: Default::default(),
             by_addr: Default::default(),
@@ -175,7 +175,9 @@ impl Puncher {
         }
         let dialer = my_id < rec.id.as_str();
         tracing::info!("perçage : {} ({}) à {candidates:?}", rec.name, short(&rec.id));
-        let bridge = Arc::new(UdpSocket::bind(SocketAddr::new(self.lan_ip.into(), 0)).await?);
+        // Loopback only: on the LAN address any machine nearby could send to
+        // it, and the dialer side takes the first sender for EasyTier.
+        let bridge = Arc::new(UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).await?);
         let link = Link {
             candidates,
             established: None,

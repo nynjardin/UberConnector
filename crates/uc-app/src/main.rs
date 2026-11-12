@@ -455,6 +455,7 @@ fn main() {
             app.manage(engine.clone());
             tauri::async_runtime::spawn(engine.clone().refresh_loop());
             tauri::async_runtime::spawn(engine.clone().lobby_loop());
+            tauri::async_runtime::spawn(engine.clone().push_loop());
             tauri::async_runtime::spawn(update_loop(handle.clone(), engine.clone()));
             setup_tray(&handle, &engine)?;
             // Test: a toast at launch (click it: shows the window).
