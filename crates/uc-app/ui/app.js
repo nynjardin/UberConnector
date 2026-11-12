@@ -732,7 +732,35 @@ function renderChat() {
   $("chat-empty").hidden = lines.length > 0;
   $("chat-empty").textContent = t("Aucun message. Les messages ne sont pas conservés : ils disparaissent à la déconnexion.");
   if (switched || atBottom) log.scrollTop = log.scrollHeight;
+  syncChatToggle();
 }
+
+// The chat panel can be hidden (players often talk elsewhere). Its link
+// stays up: names, avatars and salon changes still arrive through it.
+const missed = {};
+const chatHidden = () => store.get("nochat") === "1";
+
+function syncChatToggle() {
+  const off = chatHidden();
+  document.querySelector(".salon-body").classList.toggle("nochat", off);
+  const b = $("btn-chat");
+  b.classList.toggle("off", off);
+  b.title = t(off ? "Afficher le chat" : "Masquer le chat");
+  b.setAttribute("aria-label", b.title);
+  if (!off && selected) delete missed[selected];
+  const n = (off && selected && missed[selected]) || 0;
+  $("chat-missed").hidden = !n;
+  $("chat-missed").textContent = n > 99 ? "99+" : String(n);
+}
+
+$("btn-chat").addEventListener("click", () => {
+  store.set("nochat", chatHidden() ? "" : "1");
+  syncChatToggle();
+  if (!chatHidden()) {
+    const log = $("chat-log");
+    log.scrollTop = log.scrollHeight;
+  }
+});
 
 listen("chat", ({ payload: { salon_id, line } }) => {
   const list = (chats[salon_id] ||= []);
@@ -746,6 +774,10 @@ listen("chat", ({ payload: { salon_id, line } }) => {
     log.hidden = false;
     log.append(lineEl(line, prev));
     if (atBottom || line.mine) log.scrollTop = log.scrollHeight;
+    if (chatHidden() && !line.system && !line.mine) {
+      missed[salon_id] = (missed[salon_id] || 0) + 1;
+      syncChatToggle();
+    }
   } else if (!line.system) {
     unread[salon_id] = (unread[salon_id] || 0) + 1;
     if (state) render(state);
@@ -758,6 +790,7 @@ function pruneChats(s) {
     if (s.phase !== "on" || !s.settings.connected.includes(id)) {
       delete chats[id];
       delete unread[id];
+      delete missed[id];
       if (id === renderedChat) renderedChat = null;
     }
   }
@@ -1205,6 +1238,7 @@ invoke("ui_lang").then(async (lang) => {
   setLang(lang);
   translatePage(document.body);
   setCollapsed(store.get("collapsed") === "1");
+syncChatToggle();
   const s = await invoke("get_state");
   // Lines received before this page loaded (e.g. window reopened from the tray).
   for (const id of s.settings.connected) chats[id] = await invoke("get_chat", { id });

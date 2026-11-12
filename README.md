@@ -1,3 +1,5 @@
+<img src="crates/uc-app/icons/icon.png" alt="UberConnector logo" width="96" align="right">
+
 # UberConnector
 
 A virtual LAN for playing "LAN" games over the Internet: no server, no
@@ -30,6 +32,26 @@ setting) see the other players as if they were on a real local network.
 - **Around it**: chat without history, game network test, per-player link
   quality, Windows notifications, `uberconnector://` invite links (with the
   web page `web/index.html`), automatic updates from GitHub releases.
+
+## Version compatibility
+
+**Every player of a salon needs version 0.2.0 or later to chat.** The game
+network itself (virtual LAN, discovery, relaying) still works between older
+and newer versions.
+
+Up to 0.1.5, a member proved who they were in the salon chat with a fixed
+signed message. Any other member of the salon could copy that message and
+pass for them: write under their name, or receive what was meant for them.
+Since 0.2.0 each chat link is encrypted with a key that only the two real
+members can compute, fresh for every link, so a copied greeting is useless.
+Closing that hole meant changing how chat links are opened, and the old way
+could not be kept alongside without keeping the hole.
+
+A 0.2.0 player sees one line in the chat naming each member who is still on
+an older version; those members just need to accept the update the app
+offers.
+
+Planned improvements and the ideas set aside are in [ROADMAP.md](ROADMAP.md).
 
 ## Layout
 

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+<defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1c2740"/><stop offset="1" stop-color="#0b0f17"/></linearGradient><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6ff0c2"/><stop offset="1" stop-color="#1fb586"/></linearGradient>
+<mask id="holes" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><rect width="256" height="256" fill="#fff"/><circle cx="128" cy="72" r="13"/><circle cx="66" cy="178" r="11"/><circle cx="190" cy="178" r="11"/></mask></defs>
+<rect width="256" height="256" rx="56" fill="url(#bg)"/>
+<g mask="url(#holes)">
+<path d="M66 178H190" fill="none" stroke="#38d6a0" stroke-opacity=".45" stroke-width="18" stroke-linecap="round"/>
+<path d="M66 178 128 72 190 178" fill="none" stroke="url(#g)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+<circle cx="128" cy="72" r="30" fill="#6ff0c2"/>
+<circle cx="66" cy="178" r="26" fill="#38d6a0"/>
+<circle cx="190" cy="178" r="26" fill="#38d6a0"/>
+</g>
+</svg>

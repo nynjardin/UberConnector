@@ -11,9 +11,14 @@
     <div class="brand">
       <svg class="logo" viewBox="0 0 32 32" aria-hidden="true">
         <rect width="32" height="32" rx="7" class="logo-bg"/>
-        <line x1="10" y1="21.5" x2="22" y2="10.5" class="logo-link"/>
-        <circle cx="10" cy="21.5" r="4.2" class="logo-node"/>
-        <circle cx="22" cy="10.5" r="4.2" class="logo-node"/>
+        <path d="M8.25 22.25H23.75" class="logo-link logo-link-dim"/>
+        <path d="M8.25 22.25 16 9 23.75 22.25" class="logo-link"/>
+        <circle cx="16" cy="9" r="3.75" class="logo-node"/>
+        <circle cx="8.25" cy="22.25" r="3.25" class="logo-node"/>
+        <circle cx="23.75" cy="22.25" r="3.25" class="logo-node"/>
+        <circle cx="16" cy="9" r="1.6" class="logo-bg"/>
+        <circle cx="8.25" cy="22.25" r="1.4" class="logo-bg"/>
+        <circle cx="23.75" cy="22.25" r="1.4" class="logo-bg"/>
       </svg>
       <span class="brand-name">UberConnector</span>
     </div>
@@ -87,6 +92,10 @@
             </div>
             <div class="head-actions">
               <button id="btn-connect" class="btn small primary">Se connecter</button>
+              <button id="btn-chat" class="icon-btn chat-toggle" title="Masquer le chat" aria-label="Masquer le chat">
+                <svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1h-8l-5 4v-4H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" style="fill:none" stroke-width="2" stroke-linejoin="round"/></svg>
+                <span id="chat-missed" class="chat-missed" hidden></span>
+              </button>
               <button id="btn-manage" class="icon-btn" title="Gérer le salon" aria-label="Gérer le salon">
                 <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2" stroke="none"/><circle cx="12" cy="12" r="2" stroke="none"/><circle cx="19" cy="12" r="2" stroke="none"/></svg>
               </button>

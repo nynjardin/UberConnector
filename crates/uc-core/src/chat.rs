@@ -2,8 +2,18 @@
 //! by the salon's EasyTier network (through its SOCKS5 proxy, so it works
 //! with or without a virtual adapter). Nothing is stored: no history.
 //!
-//! The lower id dials. Both sides open with an HMAC (salon key) so a peer of
-//! another salon reaching this port cannot join the conversation.
+//! The lower id dials. Both sides open with a `Hello` in clear: an HMAC (salon
+//! key) proves membership, a signature ties the X25519 key to the identity,
+//! and a fresh nonce makes the link unique. A `Hello` holds nothing secret
+//! and can be copied by any member, so it proves nothing alone: everything
+//! after it is encrypted with a key that only the two real owners of the
+//! X25519 keys can compute (static Diffie-Hellman + both nonces), starting
+//! with a `Ready` each side must read before the link counts. Copying a
+//! member's `Hello` therefore gives nothing, and neither does replaying the
+//! frames of an earlier link.
+//!
+//! Versions up to 0.1.5 signed a fixed `Hello` and then talked in clear (any
+//! member could pass for another): they cannot chat with this one.
 
 use crate::identity::{self, Identity};
 use crate::images;
@@ -69,7 +79,12 @@ enum Wire {
         pk: String,
         xpk: String,
         sig: String,
+        /// Fresh for every link (hex); absent before 0.2.0.
+        #[serde(default)]
+        nonce: String,
     },
+    /// First encrypted frame: proves the sender computed the link's key.
+    Ready,
     Msg {
         text: String,
         /// Random id: a message replayed on a new link is shown once.
@@ -118,6 +133,8 @@ pub struct Chat {
     sent: Mutex<VecDeque<(String, u64, String)>>,
     /// "<sender>/<message id>" already shown.
     seen: Mutex<HashSet<String>>,
+    /// Members told once that their version is too old to chat with us.
+    outdated: Mutex<HashSet<String>>,
     /// Set by `stop`: every link ends.
     stopped: watch::Sender<bool>,
     /// Accept and profile loops (they hold the listener, hence the port).
@@ -177,6 +194,7 @@ impl Chat {
             asked: Default::default(),
             sent: Default::default(),
             seen: Default::default(),
+            outdated: Default::default(),
             stopped: watch::channel(false).0,
             tasks: Default::default(),
         });
@@ -210,11 +228,40 @@ impl Chat {
         self.conns.lock().unwrap().keys().cloned().collect()
     }
 
-    fn mac(&self, id: &str) -> String {
+    fn hmac(&self, label: &[u8], parts: &[&[u8]]) -> [u8; 32] {
         let mut m = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key).unwrap();
-        m.update(b"uc-chat-hello/");
-        m.update(id.as_bytes());
-        hex::encode(m.finalize().into_bytes())
+        m.update(label);
+        for p in parts {
+            m.update(p);
+        }
+        m.finalize().into_bytes().into()
+    }
+
+    /// The label changed with the handshake (0.2.0): an older version
+    /// rejects our hello at once instead of reading encrypted frames.
+    fn mac(&self, id: &str) -> String {
+        hex::encode(self.hmac(b"uc-chat-hello2/", &[id.as_bytes()]))
+    }
+
+    /// What versions up to 0.1.5 send.
+    fn old_mac(&self, id: &str) -> String {
+        hex::encode(self.hmac(b"uc-chat-hello/", &[id.as_bytes()]))
+    }
+
+    /// Keys of one link: (ours to send, theirs to receive). Only the holders
+    /// of the two X25519 secrets can compute them, and both nonces are in:
+    /// a new link never reuses the keys of an earlier one.
+    fn link_keys(&self, peer: &str, peer_xpk: &str, my_nonce: &str, peer_nonce: &str) -> Result<(Sealer, Sealer)> {
+        if peer_nonce.len() != 32 || !peer_nonce.bytes().all(|b| b.is_ascii_hexdigit()) {
+            bail!("nonce invalide");
+        }
+        let mine = (self.my_id.as_str(), my_nonce);
+        let theirs = (peer, peer_nonce);
+        let (a, b) = if mine.0 < theirs.0 { (mine, theirs) } else { (theirs, mine) };
+        let ctx = format!("chat/{}/{}/{}/{}/{}", self.salon_id, a.0, a.1, b.0, b.1);
+        let base = self.me.shared_key(peer_xpk, &ctx)?;
+        let key = |sender: &str| Sealer { key: self.hmac(b"uc-chat-key/", &[&base, sender.as_bytes()]), count: 0 };
+        Ok((key(&self.my_id), key(peer)))
     }
 
     fn hello_msg(&self, id: &str, xpk: &str) -> Vec<u8> {
@@ -398,6 +445,7 @@ impl Chat {
 
         let p = self.profile.borrow().clone();
         let xpk = self.me.x25519_public_hex();
+        let my_nonce = hex::encode(rand::random::<[u8; 16]>());
         let hello = Wire::Hello {
             id: self.my_id.clone(),
             name: p.name,
@@ -406,23 +454,48 @@ impl Chat {
             pk: self.me.public_key_hex(),
             sig: self.me.sign_hex(&self.hello_msg(&self.my_id, &xpk)),
             xpk,
+            nonce: my_nonce.clone(),
         };
         if write_line(&mut w, &hello).await.is_err() {
             return;
         }
-        let Ok(Ok(Some(Wire::Hello { id, name, avatar, mac, pk, xpk, sig }))) =
+        let Ok(Ok(Some(Wire::Hello { id, name, avatar, mac, pk, xpk, sig, nonce }))) =
             tokio::time::timeout(Duration::from_secs(10), read_line(&mut reader)).await
         else {
             return;
         };
-        if mac != self.mac(&id) || id == self.my_id || expected.as_ref().is_some_and(|e| *e != id) {
+        if id == self.my_id || expected.as_ref().is_some_and(|e| *e != id) {
             return;
         }
-        // Identity proof: nobody can claim another member's id (and get its keys).
+        // The signature ties this X25519 key to the member's identity.
         if !identity::verify(&id, &pk, &self.hello_msg(&id, &xpk), &sig) || self.is_banned(&id) {
             return;
         }
         let name = clean(&name, 32);
+        if nonce.is_empty() && mac == self.old_mac(&id) {
+            if self.outdated.lock().unwrap().insert(id.clone()) {
+                tracing::info!("chat : {id} utilise une version antérieure à 0.2.0");
+                self.system(format!("{name} utilise une ancienne version d'UberConnector : pas de chat avec ce joueur tant qu'il n'a pas mis à jour"));
+            }
+            return;
+        }
+        if mac != self.mac(&id) {
+            return;
+        }
+        // Identity proof: a hello can be copied, the key of the link cannot
+        // be computed without the member's secret. Nothing of this member is
+        // accepted before its `Ready` decrypts.
+        let Ok((mut seal, mut unseal)) = self.link_keys(&id, &xpk, &my_nonce, &nonce) else { return };
+        if write_frame(&mut w, &seal.seal(&Wire::Ready)).await.is_err() {
+            return;
+        }
+        match tokio::time::timeout(Duration::from_secs(10), read_frame(&mut reader)).await {
+            Ok(Ok(Some(f))) if matches!(unseal.open(&f), Ok(Wire::Ready)) => {}
+            _ => {
+                tracing::warn!("chat : liaison refusée, {id} n'a pas prouvé son identité");
+                return;
+            }
+        }
         let _ = self.events.send(ChatEvent::Member(Member { id: id.clone(), pk, xpk, name: name.clone() }));
         let avatar = clean(&avatar, MAX_AVATAR);
 
@@ -455,7 +528,7 @@ impl Chat {
 
         let writer = tokio::spawn(async move {
             while let Some(m) = rx.recv().await {
-                if write_line(&mut w, &m).await.is_err() {
+                if write_frame(&mut w, &seal.seal(&m)).await.is_err() {
                     break;
                 }
             }
@@ -465,11 +538,13 @@ impl Chat {
             if *stopped.borrow() {
                 break;
             }
-            let m = tokio::select! {
-                m = read_line(&mut reader) => m,
+            let f = tokio::select! {
+                f = read_frame(&mut reader) => f,
                 _ = stopped.changed() => break,
             };
-            let Ok(Some(m)) = m else { break };
+            let Ok(Some(f)) = f else { break };
+            // A frame that does not decrypt, or out of order: the link ends.
+            let Ok(m) = unseal.open(&f) else { break };
             if self.is_banned(&id) {
                 break;
             }
@@ -533,7 +608,7 @@ impl Chat {
                     }
                     let _ = self.events.send(ChatEvent::Profile { id: id.clone(), name, avatar });
                 }
-                Wire::Hello { .. } => {}
+                Wire::Hello { .. } | Wire::Ready => {}
             }
         }
         writer.abort();
@@ -578,6 +653,56 @@ async fn read_line(r: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Result<
     Ok(Some(serde_json::from_slice(&buf)?))
 }
 
+/// One direction of a link: frames are encrypted and numbered, so a frame
+/// cannot be forged, replayed, dropped or reordered unnoticed.
+struct Sealer {
+    key: [u8; 32],
+    count: u64,
+}
+
+impl Sealer {
+    fn seal(&mut self, m: &Wire) -> Vec<u8> {
+        let mut plain = self.count.to_be_bytes().to_vec();
+        self.count += 1;
+        plain.extend(serde_json::to_vec(m).expect("chat frame"));
+        crate::room::encrypt(&self.key, &plain)
+    }
+
+    fn open(&mut self, frame: &[u8]) -> Result<Wire> {
+        let plain = crate::room::decrypt(&self.key, frame)?;
+        let (count, json) = plain.split_first_chunk::<8>().context("trame trop courte")?;
+        if u64::from_be_bytes(*count) != self.count {
+            bail!("trame hors séquence");
+        }
+        self.count += 1;
+        Ok(serde_json::from_slice(json)?)
+    }
+}
+
+/// Frames after the hello: 4-byte length, then the encrypted bytes.
+async fn write_frame(w: &mut (impl AsyncWriteExt + Unpin), frame: &[u8]) -> Result<()> {
+    let mut out = (frame.len() as u32).to_be_bytes().to_vec();
+    out.extend_from_slice(frame);
+    w.write_all(&out).await?;
+    Ok(())
+}
+
+async fn read_frame(r: &mut BufReader<tokio::net::tcp::OwnedReadHalf>) -> Result<Option<Vec<u8>>> {
+    let mut len = [0u8; 4];
+    match r.read_exact(&mut len).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    let len = u32::from_be_bytes(len) as u64;
+    if len > MAX_LINE {
+        bail!("trame trop longue");
+    }
+    let mut buf = vec![0u8; len as usize];
+    r.read_exact(&mut buf).await?;
+    Ok(Some(buf))
+}
+
 async fn socks5_connect(proxy: SocketAddr, ip: Ipv4Addr, port: u16) -> Result<TcpStream> {
     let mut s = TcpStream::connect(proxy).await?;
     s.write_all(&[5, 1, 0]).await?;
@@ -617,6 +742,144 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(TcpListener::bind(("0.0.0.0", port)).await.is_ok());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    type Events = mpsc::UnboundedReceiver<ChatEvent>;
+
+    /// One member (`who`, its own identity) of the test salon `tag`.
+    async fn start(tag: &str, who: &str) -> (Arc<Chat>, Events, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("uc-chat-test-{}-{tag}-{who}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let me = Identity::load_or_create(&dir).unwrap();
+        let (profile_tx, profile) = watch::channel(Profile::default());
+        std::mem::forget(profile_tx);
+        let (events, rx) = mpsc::unbounded_channel();
+        // SOCKS port 1: nothing listens there, links are direct (loopback).
+        let chat = Chat::start([7; 32], &format!("salon-test-{tag}"), me, vec![], profile, 1, events, dir.clone(), true).await.unwrap();
+        (chat, rx, dir)
+    }
+
+    /// Next event `pick` keeps, or `None` after `wait`.
+    async fn next<T>(rx: &mut Events, wait: Duration, pick: impl Fn(ChatEvent) -> Option<T>) -> Option<T> {
+        let found = async {
+            loop {
+                if let Some(v) = pick(rx.recv().await?) {
+                    return Some(v);
+                }
+            }
+        };
+        tokio::time::timeout(wait, found).await.ok().flatten()
+    }
+
+    fn member(e: ChatEvent) -> Option<String> {
+        match e {
+            ChatEvent::Member(m) => Some(m.id),
+            _ => None,
+        }
+    }
+
+    /// Two chats of the same salon (the second one gets another port).
+    async fn pair(tag: &str) -> ((Arc<Chat>, Events, PathBuf), (Arc<Chat>, Events, PathBuf)) {
+        (start(tag, "a").await, start(tag, "b").await)
+    }
+
+    #[tokio::test]
+    async fn members_link_and_talk() {
+        let ((a, mut a_rx, a_dir), (b, mut b_rx, b_dir)) = pair("link").await;
+        // Whoever has the higher id waits before dialing: ask both.
+        a.ensure_peer(&b.my_id, Ipv4Addr::LOCALHOST, b.port());
+        b.ensure_peer(&a.my_id, Ipv4Addr::LOCALHOST, a.port());
+        let wait = Duration::from_secs(5);
+        assert_eq!(next(&mut b_rx, wait, member).await.as_deref(), Some(a.my_id.as_str()));
+        assert_eq!(next(&mut a_rx, wait, member).await.as_deref(), Some(b.my_id.as_str()));
+        a.say("bonjour");
+        let line = next(&mut b_rx, wait, |e| match e {
+            ChatEvent::Line(l) if !l.system => Some(l),
+            _ => None,
+        })
+        .await
+        .unwrap();
+        assert_eq!((line.text.as_str(), line.from.as_str()), ("bonjour", a.my_id.as_str()));
+        a.stop();
+        b.stop();
+        for d in [a_dir, b_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// A member copies another member's hello (it travels in clear) and
+    /// presents it as its own: the link must not be accepted.
+    #[tokio::test]
+    async fn copied_hello_is_refused() {
+        let ((a, _a_rx, a_dir), (b, mut b_rx, b_dir)) = pair("copy").await;
+        // The attacker dials A and keeps the hello A opens with.
+        let mut to_a = BufReader::new(TcpStream::connect((Ipv4Addr::LOCALHOST, a.port())).await.unwrap());
+        let mut hello = Vec::new();
+        to_a.read_until(b'\n', &mut hello).await.unwrap();
+        assert!(String::from_utf8_lossy(&hello).contains(&a.my_id));
+        // It replays it to B, then talks: as a frame, and as an old plain line.
+        let mut to_b = TcpStream::connect((Ipv4Addr::LOCALHOST, b.port())).await.unwrap();
+        to_b.write_all(&hello).await.unwrap();
+        let mut fake = serde_json::to_vec(&Wire::Msg { text: "je suis A".into(), id: "1".into(), ts: 0 }).unwrap();
+        fake.push(b'\n');
+        write_frame(&mut to_b, &fake).await.unwrap();
+        let _ = to_b.write_all(&fake).await;
+        let accepted = next(&mut b_rx, Duration::from_secs(2), |e| match e {
+            ChatEvent::Member(_) | ChatEvent::Line(_) | ChatEvent::Profile { .. } => Some(()),
+            _ => None,
+        })
+        .await;
+        assert!(accepted.is_none(), "B accepted a copied hello");
+        assert!(b.linked().is_empty());
+        a.stop();
+        b.stop();
+        for d in [a_dir, b_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    /// A member still on 0.1.5 or older: no link, and one line saying why.
+    #[tokio::test]
+    async fn old_version_is_named() {
+        let (b, mut b_rx, b_dir) = start("old", "b").await;
+        let old_dir = std::env::temp_dir().join(format!("uc-chat-test-{}-old-a", std::process::id()));
+        let old = Identity::load_or_create(&old_dir).unwrap();
+        let xpk = old.x25519_public_hex();
+        let hello = serde_json::json!({
+            "t": "hello", "id": old.id, "name": "Ancien", "avatar": "",
+            "mac": b.old_mac(&old.id), "pk": old.public_key_hex(),
+            "sig": old.sign_hex(&b.hello_msg(&old.id, &xpk)), "xpk": xpk,
+        });
+        for _ in 0..2 {
+            let mut s = TcpStream::connect((Ipv4Addr::LOCALHOST, b.port())).await.unwrap();
+            s.write_all(format!("{hello}\n").as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        let mut lines = vec![];
+        while let Ok(e) = b_rx.try_recv() {
+            match e {
+                ChatEvent::Line(l) => lines.push(l.text),
+                ChatEvent::Member(_) => panic!("old hello accepted"),
+                _ => {}
+            }
+        }
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("Ancien utilise une ancienne version"));
+        b.stop();
+        for d in [b_dir, old_dir] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn frames_are_numbered() {
+        let (mut tx, mut rx) = (Sealer { key: [3; 32], count: 0 }, Sealer { key: [3; 32], count: 0 });
+        let (f0, f1) = (tx.seal(&Wire::Ready), tx.seal(&Wire::SalonChanged));
+        assert!(matches!(rx.open(&f0), Ok(Wire::Ready)));
+        // Replayed, then a frame of another key.
+        assert!(rx.open(&f0).is_err());
+        assert!(matches!(rx.open(&f1), Ok(Wire::SalonChanged)));
+        assert!(Sealer { key: [4; 32], count: 0 }.open(&f0).is_err());
     }
 }
 

@@ -29,6 +29,8 @@ const EN = {
   "Copier l'invitation": "Copy the invite",
   "Se connecter": "Connect",
   "Gérer le salon": "Manage the room",
+  "Masquer le chat": "Hide the chat",
+  "Afficher le chat": "Show the chat",
   "Ce salon a changé de clé sans vous la transmettre (vous n'étiez pas en ligne en même temps qu'un modérateur). Demandez le nouveau code d'invitation à un membre, puis « Rejoindre ».":
     "This room changed its key without passing it to you (you were not online at the same time as a moderator). Ask a member for the new invite code, then use \"Join\".",
   "Écrire un message…": "Write a message…",

@@ -21,6 +21,12 @@ French; the button names below are given as they appear on screen.)
 5. In the game, pick your IP in the in-game salon (10.X.y.z, copy button).
 
 Chat: one per salon. Nothing is kept: messages disappear on disconnection.
+The chat button at the top right of a salon hides the chat panel if you
+already talk elsewhere (a counter shows the messages missed).
+Every player needs version 0.2.0 or later to chat: older versions let a
+salon member pass for another one in the chat, and fixing that changed how
+chat links are opened. The game network still works with older versions;
+the chat names the players who have to update.
 
 Avatars: emoji or picture (profile: click your name; salon: click the
 salon's avatar if you own it). The salon pane folds with its arrow.
@@ -36,7 +42,8 @@ Others see it without reconnecting.
 
 The switch at the top right turns the connection on or off. Closing the
 window keeps the app in the notification area. To quit completely:
-right-click the tray icon, then "Quitter".
+right-click the tray icon, then "Quitter". The same menu lists who is
+online in each connected salon.
 
 Connecting players: nothing to configure. UberConnector asks your router to
 open its port (UPnP / NAT-PMP, closed on disconnection); one of the two

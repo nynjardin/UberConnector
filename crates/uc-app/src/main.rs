@@ -275,6 +275,32 @@ fn phase_label(s: &Snapshot) -> String {
     }
 }
 
+/// Tray menu lines saying who is online: one (menu id, label) per connected
+/// salon, followed by its other players.
+fn online_lines(s: &Snapshot) -> Vec<(String, String)> {
+    let mut out = vec![];
+    if s.phase != Phase::On {
+        return out;
+    }
+    for salon in s.salons.iter().filter(|x| s.settings.connected.contains(&x.id)) {
+        let others: Vec<&str> = s
+            .statuses
+            .get(&salon.id)
+            .map(|st| st.members.iter().filter(|m| m.path != "vous").map(|m| m.name.as_str()).collect())
+            .unwrap_or_default();
+        let count = match others.len() {
+            0 => tr!("personne en ligne", "nobody online").to_string(),
+            1 => tr!("1 joueur en ligne", "1 player online").to_string(),
+            n => trf!("{n} joueurs en ligne", "{n} players online"),
+        };
+        out.push((format!("salon:{}", salon.id), format!("{} : {count}", salon.name.replace('&', "&&"))));
+        for (i, name) in others.iter().enumerate() {
+            out.push((format!("player:{}:{i}", salon.id), format!("      {}", name.replace('&', "&&"))));
+        }
+    }
+    out
+}
+
 fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", tr!("Ouvrir UberConnector", "Open UberConnector"), true, None::<&str>)?;
     let toggle = CheckMenuItem::with_id(app, "toggle", tr!("Activé", "Enabled"), true, false, None::<&str>)?;
@@ -299,7 +325,12 @@ fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
                     engine.shutdown();
                     app.exit(0);
                 }
-                _ => {}
+                id => {
+                    if let Some(salon) = id.strip_prefix("salon:") {
+                        show_main(app);
+                        let _ = app.emit("select", salon);
+                    }
+                }
             }
         })
         .on_tray_icon_event(|tray, ev| {
@@ -310,7 +341,20 @@ fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
         .build(app)?;
 
     let app = app.clone();
+    // Lines of the "who is online" part, as last built into the menu.
+    let shown: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
     engine.set_on_change(move |s| {
+        // The menu is only rebuilt when those lines change (a status arrives
+        // every second), never just refreshed in place.
+        let lines = online_lines(s);
+        let rebuild = {
+            let mut shown = shown.lock().unwrap();
+            let changed = shown.as_ref() != Some(&lines);
+            if changed {
+                *shown = Some(lines.clone());
+            }
+            changed
+        };
         // Menu and tray calls made from another thread WAIT for the main
         // thread. The engine calls us from its own tasks (every status of the
         // helper) while holding its observer lock, and a command running on
@@ -318,7 +362,25 @@ fn setup_tray(app: &AppHandle, engine: &Arc<Engine>) -> tauri::Result<()> {
         // here froze the app for good. So the work is only queued.
         let (on, tip) = (s.phase != Phase::Off, format!("UberConnector : {}", phase_label(s)));
         let (open, toggle, quit, tray) = (open.clone(), toggle.clone(), quit.clone(), tray.clone());
+        let handle = app.clone();
         let _ = app.run_on_main_thread(move || {
+            if rebuild {
+                let built = (|| -> tauri::Result<Menu<tauri::Wry>> {
+                    let menu = Menu::with_items(&handle, &[&open, &toggle, &PredefinedMenuItem::separator(&handle)?])?;
+                    for (id, label) in &lines {
+                        // Salons open the window on click; players are just listed.
+                        menu.append(&MenuItem::with_id(&handle, id, label, id.starts_with("salon:"), None::<&str>)?)?;
+                    }
+                    if !lines.is_empty() {
+                        menu.append(&PredefinedMenuItem::separator(&handle)?)?;
+                    }
+                    menu.append(&quit)?;
+                    Ok(menu)
+                })();
+                if let Ok(menu) = built {
+                    let _ = tray.set_menu(Some(menu));
+                }
+            }
             // Also follows a language change in the settings.
             let _ = open.set_text(tr!("Ouvrir UberConnector", "Open UberConnector"));
             let _ = toggle.set_text(tr!("Activé", "Enabled"));

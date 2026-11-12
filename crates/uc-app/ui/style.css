@@ -51,7 +51,8 @@ h2 { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: u
 .brand { display: flex; align-items: center; gap: 10px; }
 .logo { width: 28px; height: 28px; }
 .logo-bg { fill: #182032; }
-.logo-link { stroke: var(--accent); stroke-width: 2.6; stroke-linecap: round; }
+.logo-link { fill: none; stroke: var(--accent); stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+.logo-link-dim { stroke-opacity: .45; }
 .logo-node { fill: var(--accent); }
 .brand-name { font-weight: 650; font-size: 16px; }
 .topbar-right { display: flex; align-items: center; gap: 10px; }
@@ -208,6 +209,15 @@ select.input option { background: var(--surface); color: var(--text); }
 .my-net.good { color: var(--accent); }
 .my-net.mid { color: var(--text); }
 .my-net.bad { color: var(--bad); }
+/* Chat hidden: the players take the whole card; connection progress stays. */
+.salon-body.nochat { grid-template-columns: 1fr; grid-template-rows: auto 1fr; gap: 10px; }
+.salon-body.nochat .chat { border: 0; background: none; }
+.salon-body.nochat .chat-log, .salon-body.nochat .chat-empty, .salon-body.nochat .chat-form { display: none; }
+.salon-body.nochat .chat-pending { border: 1px solid var(--border); border-radius: 8px; }
+.salon-body.nochat #players { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 12px; }
+.chat-toggle { position: relative; }
+.chat-toggle.off { opacity: .55; }
+.chat-missed { position: absolute; top: -3px; right: -3px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--bg); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
 .chat-pending.idle { color: var(--muted); }
 .chat-pending.idle .spinner { display: none; }
 
