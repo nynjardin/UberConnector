@@ -420,7 +420,11 @@ impl Engine {
                     let _ = tx.send(Command::Quit);
                 }
             }
-            None => self.persist(),
+            None => {
+                self.persist();
+                let ids = self.inner.lock().unwrap().settings.connected.clone();
+                self.refresh_on_connect(ids);
+            }
         }
     }
 
@@ -483,9 +487,12 @@ impl Engine {
             i.phase
         });
         self.persist();
-        // Connecting while disabled activates (salons are joined once the helper is up).
+        // Connecting while disabled activates (salons are joined once the
+        // helper is up, and refetched then).
         if phase == Phase::Off {
             self.set_enabled(true).await;
+        } else {
+            self.refresh_on_connect(vec![id.to_string()]);
         }
     }
 
@@ -702,18 +709,38 @@ impl Engine {
     /// Refetches one salon's manifest right away (owner's change hint).
     /// Retried for a while: the DHT can lag behind the hint.
     async fn refresh_one(&self, id: &str) {
-        let Ok(dir) = self.directory().await else { return };
         for attempt in 0..5 {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_secs(8)).await;
             }
-            let _edit = self.edits.lock().await;
-            let Some(mut s) = self.inner.lock().unwrap().salons.iter().find(|s| s.id == id).cloned() else { return };
-            if let Ok(Refresh::Updated) = dir.refresh(&self.me, &mut s).await {
-                self.apply_refreshed(s);
+            if self.refresh_once(id).await {
                 return;
             }
         }
+    }
+
+    /// One refetch of a salon; true if something changed (applied).
+    async fn refresh_once(&self, id: &str) -> bool {
+        let Ok(dir) = self.directory().await else { return false };
+        let _edit = self.edits.lock().await;
+        let Some(mut s) = self.inner.lock().unwrap().salons.iter().find(|s| s.id == id).cloned() else { return false };
+        if let Ok(Refresh::Updated) = dir.refresh(&self.me, &mut s).await {
+            self.apply_refreshed(s);
+            return true;
+        }
+        false
+    }
+
+    /// A member coming back after a key change (ban, approval switched on)
+    /// picks the new key up now, not at the next 20-minute refresh: the
+    /// session restarts with it within seconds (see `apply_refreshed`).
+    fn refresh_on_connect(self: &Arc<Self>, ids: Vec<String>) {
+        let me = self.clone();
+        tauri::async_runtime::spawn(async move {
+            for id in ids {
+                me.refresh_once(&id).await;
+            }
+        });
     }
 
     /// Applies a refreshed salon: new key -> reconnect, bans -> chat,
