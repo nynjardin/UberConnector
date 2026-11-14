@@ -280,8 +280,13 @@ fn port_map_done(
 }
 
 fn mark(status: &watch::Sender<Status>, t0: Instant, done: &mut HashSet<&'static str>, key: &'static str, label: String) {
+    mark_at(status, t0.elapsed().as_secs_f32(), done, key, label)
+}
+
+/// `mark` for a step timed elsewhere (`at`: seconds since the start).
+fn mark_at(status: &watch::Sender<Status>, at: f32, done: &mut HashSet<&'static str>, key: &'static str, label: String) {
     if done.insert(key) {
-        let line = format!("{:>5.1} s  {label}", t0.elapsed().as_secs_f32());
+        let line = format!("{at:>5.1} s  {label}");
         tracing::info!("chrono : {line}");
         status.send_modify(|s| s.timings.push(line));
     }
@@ -619,6 +624,33 @@ async fn run(
     ));
     stage("searching");
     mark(&status, t0, &mut marks, "et", "EasyTier lancé".into());
+    // Game mode: EasyTier only links once Wintun has created the adapter and
+    // our IP is on it (about 10 s seen on 2026-11-14). Timed for the
+    // diagnostic, every 200 ms during the first 30 s.
+    let (tun_tx, mut tun_rx) = mpsc::unbounded_channel::<(&'static str, &'static str, f32)>();
+    let tun_watch = (cfg.game && !easytier::test_no_tun()).then(|| {
+        let dev = et_cfg.dev_name.clone();
+        tokio::spawn(async move {
+            let (mut seen, mut ip) = (false, false);
+            while t0.elapsed() < Duration::from_secs(30) && !(seen && ip) {
+                if !seen && crate::system::adapter_present(&dev) {
+                    seen = true;
+                    let _ = tun_tx.send(("tun_seen", "carte réseau créée", t0.elapsed().as_secs_f32()));
+                }
+                if !ip && if_addrs::get_if_addrs().is_ok_and(|a| a.iter().any(|i| i.ip() == std::net::IpAddr::V4(vip))) {
+                    ip = true;
+                    let _ = tun_tx.send(("tun_ip", "IP virtuelle posée sur la carte", t0.elapsed().as_secs_f32()));
+                }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        })
+        .abort_handle()
+    });
+    let _stop_tun_watch = OnDrop(move || {
+        if let Some(t) = &tun_watch {
+            t.abort();
+        }
+    });
     // Game network test: needs the virtual adapter.
     // Game announcements sent to 255.255.255.255 through any adapter: into
     // the salon (needs the virtual adapter and admin rights).
@@ -689,7 +721,13 @@ async fn run(
     // Reachable from outside: the opened port, otherwise our public IP with
     // EasyTier's port (works if it is forwarded by hand); and the LAN one.
     // Reachable members are joined at once, without hole punching.
+    // `UC_NO_DIRECT=1` (tests): no direct address, so EasyTier can only go
+    // through the punched path and its bridge.
+    let no_direct = std::env::var_os("UC_NO_DIRECT").is_some();
     let direct_for = |pm: Option<&crate::portmap::PortMap>| -> Vec<String> {
+        if no_direct {
+            return vec![];
+        }
         let public = match pm {
             Some(pm) => Some(format!("udp://{}", pm.external)),
             None => public_ip.map(|ip| format!("udp://{ip}:{et_port}")),
@@ -1024,6 +1062,9 @@ async fn run(
                 }
             }
             _ = tick.tick() => {
+                while let Ok((key, label, at)) = tun_rx.try_recv() {
+                    mark_at(&status, at, &mut marks, key, label.into());
+                }
                 if searching_since.elapsed() > SEARCH_PHASE {
                     stage("ready");
                 }
@@ -1083,6 +1124,8 @@ async fn run(
                     }
                 }
                 if let Ok(list) = et.peers().await {
+                    // In game mode, only once the adapter is set up.
+                    mark(&status, t0, &mut marks, "et_api", "EasyTier répond".into());
                     et_linked = list
                         .iter()
                         .filter(|e| e.cost != "Local")

@@ -101,6 +101,10 @@ checked after download. The update keeps the user's `uc-data`.
 - `UC_DATA_DIR`: several engine instances on one machine.
 - `UC_NO_NOSTR=1`: discovery without the Nostr relays.
 - `UC_NO_TRACKER=1`: discovery without the UDP BitTorrent trackers.
+- `UC_NO_DIRECT=1`: no direct address in our record, so EasyTier can only
+  link through the punched path (with `uc-helper … --no-port-map`, which
+  opens no router port).
+- `UC_ET_LOG=info`: EasyTier's log file at info level (very verbose).
 - `UC_UPDATE_API`: another address instead of GitHub's release API (for
   testing updates against a local server).
 - `UC_TEST_NOTIFY=1`: shows a Windows notification at start.

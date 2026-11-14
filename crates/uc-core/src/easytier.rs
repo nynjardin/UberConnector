@@ -76,9 +76,16 @@ impl EasyTier {
             .arg(format!("udp://0.0.0.0:{}", cfg.listen_port))
             .arg(format!("tcp://0.0.0.0:{}", cfg.listen_port))
             .args(["-r", &format!("127.0.0.1:{}", cfg.rpc_port)])
+            // By default EasyTier opens one socket per local address for each
+            // outgoing link. None of them can reach our punch bridge on
+            // 127.0.0.1 (AddrNotAvailable, the link never forms), and to a
+            // public address the extra sockets (Radmin, VMware...) only
+            // compete for the same link. One socket, routed by Windows.
+            .args(["--bind-device", "false"])
             .args(["--console-log-level", "warn"])
             // "info" logs every unroutable multicast packet (mDNS...): ~1 MB/min.
-            .args(["--file-log-level", "warn"])
+            // `UC_ET_LOG=info` (diagnostic) shows the adapter setup steps.
+            .args(["--file-log-level", &std::env::var("UC_ET_LOG").unwrap_or_else(|_| "warn".into())])
             .arg("--file-log-dir")
             .arg(cfg.log_dir)
             .stdin(Stdio::null())

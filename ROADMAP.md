@@ -195,16 +195,34 @@ Hence the current design: **Nostr for speed, the DHT for robustness.**
   side reads all slots from the DHT. Both could use the pushed copies.
 - After a member restarts, EasyTier keeps its previous node for about
   20 s (the app hides the duplicate line meanwhile).
-- In game mode, the EasyTier link comes 6 to 10 s after the NAT is
-  punched (seen with 0.2.2 on 2026-11-14: punched at 1.9 s, link at
-  10.6 s; 14.5 s on the other PC). `easytier-cli connector add` fails
-  with "instance default (…)" and is retried every 2 s until the virtual
-  adapter shows up, so the Wintun adapter creation is the likely cause
-  (EasyTier logs "Failed to find matching adapter name" at start: it is
-  created anew each session). Without an adapter the link comes in about
-  1 s. Now the slowest step of a join.
-- About 15 s after the first EasyTier link, the path shows "plus de lien"
-  for 1 s, then "direct" again (seen twice on 2026-11-14).
+- In game mode, the EasyTier link comes about 10 s after start: EasyTier
+  only accepts `connector add` once Wintun has created the virtual adapter
+  (`Instance::run` awaits the NIC before the connectors and the RPC API;
+  listeners start before). Wintun creates a new adapter each session
+  ("Failed to find matching adapter name"), seen at 9.7 to 11 s on the
+  main test PC, close to EasyTier's own 10 s `wait_interface_show` limit.
+  0.2.3 times the steps in the diagnostic ("carte réseau créée", "IP
+  virtuelle posée", "EasyTier répond"). Possible fix, not built: the
+  helper keeps the salon's adapter open between sessions, so EasyTier
+  opens it instead of creating it (helps restarts, not the first start).
+- FIXED in 0.2.3: since 0.2.1 (bridge moved to 127.0.0.1) EasyTier could
+  never use the punched path: with its default `--bind-device true` it
+  sends from one socket per local address, none can reach 127.0.0.1
+  (AddrNotAvailable every second). Links only formed through a port opened
+  on a router (NAT-PMP / UPnP), so two players without one could not link,
+  and the path label "NAT percé" was misleading. `--bind-device false`:
+  bridge link 0.2 to 0.6 s after the punch in local tests.
+- The 1 s drop about 15 s after the first link (seen on 3 game sessions on
+  2026-11-14, and on chat-only salons at the same moments): EasyTier closed
+  the first connection after it stopped receiving ("pingpong loss too
+  much … no other ingress packets"), then reconnected. NOT fixed by 0.2.3
+  (two-PC test, 2026-11-14): every session in the log shows
+  `sync_route_info failed` on all salons at once, then that close, 24 to
+  30 s after EasyTier starts; traffic is lost for several seconds, then
+  the link stays stable. The closed connection had received only 15
+  packets (a secondary one). Suspect for 0.2.4: EasyTier's own runtime
+  UPnP/NAT-PMP mapping (on by default, `--disable-upnp`) of the same port
+  our `portmap.rs` already opens.
 - `session::run` is about 700 lines long.
 - No tests for `salons.rs`.
 - Chat comes back about 12 seconds late after the other side restarts.

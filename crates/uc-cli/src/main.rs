@@ -74,6 +74,9 @@ struct JoinOpts {
     /// Interdit les raccourcis LAN (simule des joueurs distants sur un même réseau)
     #[arg(long)]
     no_lan: bool,
+    /// N'ouvre aucun port sur la box (NAT-PMP / UPnP) : force le passage par le NAT percé
+    #[arg(long)]
+    no_port_map: bool,
 }
 
 fn ask(q: &str) -> String {
@@ -114,6 +117,7 @@ fn interactive() -> (Target, JoinOpts) {
         relays: vec![],
         ip: None,
         no_lan,
+        no_port_map: false,
     };
     (target, opts)
 }
@@ -234,7 +238,7 @@ async fn main() -> Result<()> {
         subnet: salon.subnet(),
         fixed_ip: opts.ip,
         use_lan: !opts.no_lan,
-        port_map: true,
+        port_map: !opts.no_port_map,
         custom_port: 0,
         data_dir,
     });
