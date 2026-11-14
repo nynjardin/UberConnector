@@ -139,6 +139,15 @@ impl Room {
         hex::encode(&derive("nostr-topic", &self.enc_key)[..16])
     }
 
+    /// Swarm announced on the UDP trackers (see `tracker`): only members can
+    /// compute it, and it says nothing about the salon.
+    pub fn tracker_hash(&self) -> [u8; 20] {
+        let d = derive("tracker-hash", &self.enc_key);
+        let mut h = [0u8; 20];
+        h.copy_from_slice(&d[..20]);
+        h
+    }
+
     pub fn dht_public_key(&self) -> [u8; 32] {
         self.signing_key.verifying_key().to_bytes()
     }

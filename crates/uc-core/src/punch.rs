@@ -9,7 +9,8 @@
 //! The peer with the lowest id is the "dialer": its EasyTier connects to its
 //! bridge; the other side forwards to its EasyTier UDP listener.
 
-use crate::discovery::PeerRecord;
+use crate::discovery::{self, PeerRecord};
+use crate::room::Room;
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -22,6 +23,17 @@ const MAGIC: &[u8; 3] = b"UCP";
 const T_PROBE: u8 = 1;
 const T_ACK: u8 = 2;
 const T_DATA: u8 = 3;
+/// Our presence record, encrypted with the salon key, sent to an address a
+/// tracker gave us (see `tracker`). Followed by `I_HELLO` or `I_ANSWER`.
+const T_INTRO: u8 = 4;
+const I_HELLO: u8 = 1;
+const I_ANSWER: u8 = 2;
+/// Hellos to a tracker address go on this long (it may be stale)...
+const INTRO_WINDOW: Duration = Duration::from_secs(30);
+/// ...and the same address is not introduced again before this.
+const INTRO_AGAIN: Duration = Duration::from_secs(600);
+/// We answer the hellos of one address at most this often.
+const ANSWER_EVERY: Duration = Duration::from_secs(2);
 /// Aggressive probing duration after (re)discovering a peer.
 const PUNCH_WINDOW: Duration = Duration::from_secs(45);
 /// An open path silent for this long is dead (keepalives go every 5 s): the
@@ -33,6 +45,16 @@ pub enum PunchEvent {
     Established { id: String, remote: SocketAddr, bridge: SocketAddr, dialer: bool },
     /// A peer we don't know yet probes us (a newcomer): read the DHT now.
     Unknown { id: String },
+    /// A member's record, received directly from `from` after an
+    /// introduction (tracker address).
+    Record { rec: PeerRecord, from: SocketAddr },
+}
+
+/// A tracker address we say hello to.
+struct Intro {
+    since: Instant,
+    /// A member answered from there: no more hellos.
+    done: bool,
 }
 
 struct Link {
@@ -61,7 +83,12 @@ impl Drop for Link {
 pub struct Puncher {
     sock: Arc<UdpSocket>,
     my_id: [u8; 8],
+    my_id_hex: String,
     lan_ip: Ipv4Addr,
+    /// Salon key and our record, once known (`set_intro`).
+    intro_rec: Mutex<Option<(Arc<Room>, PeerRecord)>>,
+    intros: Mutex<HashMap<SocketAddr, Intro>>,
+    answered: Mutex<HashMap<SocketAddr, Instant>>,
     et_listener: SocketAddr,
     /// When false, LAN candidates are ignored (simulates remote players on one LAN).
     use_lan: bool,
@@ -110,7 +137,11 @@ impl Puncher {
         let p = Arc::new(Self {
             sock: Arc::new(sock),
             my_id: id,
+            my_id_hex: my_id.to_string(),
             lan_ip,
+            intro_rec: Mutex::new(None),
+            intros: Default::default(),
+            answered: Default::default(),
             et_listener: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), et_port),
             use_lan,
             links: Default::default(),
@@ -134,6 +165,64 @@ impl Puncher {
         }
         self.links.lock().unwrap().clear();
         self.by_addr.lock().unwrap().clear();
+        self.intros.lock().unwrap().clear();
+    }
+
+    /// What we send to tracker addresses: our record, readable by members only.
+    pub fn set_intro(&self, room: Arc<Room>, rec: &PeerRecord) {
+        *self.intro_rec.lock().unwrap() = Some((room, rec.clone()));
+    }
+
+    /// An address a tracker gave us: hellos for a while, until a member
+    /// answers from there (it may also be stale, or someone else's).
+    /// Returns whether hellos start now.
+    pub fn introduce(&self, addr: SocketAddr) -> bool {
+        // A member we already know (its open path, or its own address).
+        if self.by_addr.lock().unwrap().contains_key(&addr) || self.links.lock().unwrap().values().any(|l| l.candidates.contains(&addr)) {
+            return false;
+        }
+        let mut intros = self.intros.lock().unwrap();
+        let start = intros.get(&addr).is_none_or(|i| i.since.elapsed() > INTRO_AGAIN);
+        if start {
+            intros.insert(addr, Intro { since: Instant::now(), done: false });
+        }
+        start
+    }
+
+    /// `T_INTRO` packet carrying our record, freshly dated.
+    fn intro_packet(&self, kind: u8) -> Option<Vec<u8>> {
+        let (room, mut rec) = self.intro_rec.lock().unwrap().clone()?;
+        rec.ts = discovery::now_secs();
+        let plain = serde_json::to_vec(&rec).ok()?;
+        let mut pkt = vec![MAGIC[0], MAGIC[1], MAGIC[2], T_INTRO, kind];
+        pkt.extend(room.encrypt(&plain));
+        Some(pkt)
+    }
+
+    async fn on_intro(&self, kind: u8, body: &[u8], from: SocketAddr) {
+        // Anyone can send this: only what decrypts with the salon key counts.
+        let Some(room) = self.intro_rec.lock().unwrap().as_ref().map(|(r, _)| r.clone()) else { return };
+        let Some(rec) = room.decrypt(body).ok().and_then(|p| serde_json::from_slice::<PeerRecord>(&p).ok()) else { return };
+        if !discovery::is_other(&rec, &self.my_id_hex) {
+            return;
+        }
+        if let Some(i) = self.intros.lock().unwrap().get_mut(&from) {
+            i.done = true;
+        }
+        if kind == I_HELLO {
+            let due = {
+                let mut answered = self.answered.lock().unwrap();
+                let due = answered.get(&from).is_none_or(|t| t.elapsed() > ANSWER_EVERY);
+                if due {
+                    answered.insert(from, Instant::now());
+                }
+                due
+            };
+            if let Some(pkt) = due.then(|| self.intro_packet(I_ANSWER)).flatten() {
+                let _ = self.sock.send_to(&pkt, from).await;
+            }
+        }
+        let _ = self.events.send(PunchEvent::Record { rec, from });
     }
 
     pub fn local_port(&self) -> u16 {
@@ -259,6 +348,19 @@ impl Puncher {
             for t in targets {
                 let _ = self.sock.send_to(&pkt, t).await;
             }
+            // Tracker addresses: a hello every second while it may help.
+            if n % 2 == 0 {
+                let intros: Vec<SocketAddr> = {
+                    let mut intros = self.intros.lock().unwrap();
+                    intros.retain(|_, i| i.since.elapsed() < INTRO_AGAIN);
+                    intros.iter().filter(|(_, i)| !i.done && i.since.elapsed() < INTRO_WINDOW).map(|(a, _)| *a).collect()
+                };
+                if let Some(hello) = (!intros.is_empty()).then(|| self.intro_packet(I_HELLO)).flatten() {
+                    for a in intros {
+                        let _ = self.sock.send_to(&hello, a).await;
+                    }
+                }
+            }
         }
     }
 
@@ -282,6 +384,7 @@ impl Puncher {
                         let _ = self.sock.send_to(&self.probe(T_ACK), from).await;
                     }
                 }
+                T_INTRO if n > 5 => self.on_intro(pkt[4], &pkt[5..], from).await,
                 T_DATA => {
                     let Some(id) = self.by_addr.lock().unwrap().get(&from).cloned() else { continue };
                     let target = {
@@ -417,4 +520,67 @@ fn parse_stun(b: &[u8], txid: &[u8; 12]) -> Option<SocketAddr> {
         i += 4 + l.div_ceil(4) * 4;
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(id: &str, name: &str) -> PeerRecord {
+        PeerRecord {
+            id: id.into(),
+            name: name.into(),
+            avatar: String::new(),
+            vip: Ipv4Addr::new(10, 1, 0, 2),
+            ts: 0,
+            punch: None,
+            punch_lan: None,
+            direct: vec![],
+            chat_port: 0,
+        }
+    }
+
+    async fn puncher(id: &str, room: &Arc<Room>) -> (Arc<Puncher>, mpsc::UnboundedReceiver<PunchEvent>) {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let p = Puncher::new(sock, id, Ipv4Addr::LOCALHOST, 9, true, tx);
+        p.set_intro(room.clone(), &record(id, id));
+        (p, rx)
+    }
+
+    async fn next_record(rx: &mut mpsc::UnboundedReceiver<PunchEvent>) -> Option<PeerRecord> {
+        let wait = async {
+            loop {
+                if let Some(PunchEvent::Record { rec, .. }) = rx.recv().await {
+                    return rec;
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(3), wait).await.ok()
+    }
+
+    /// A tracker address gets our record; the member there answers with its own.
+    #[tokio::test]
+    async fn introduction_exchanges_records() {
+        let room = Arc::new(Room::new("salon", &[7; 32]));
+        let (a, mut a_rx) = puncher("aaaaaaaaaaaaaaaa", &room).await;
+        let (b, mut b_rx) = puncher("bbbbbbbbbbbbbbbb", &room).await;
+        a.introduce(b.lan_addr());
+        assert_eq!(next_record(&mut b_rx).await.map(|r| r.name), Some("aaaaaaaaaaaaaaaa".into()));
+        assert_eq!(next_record(&mut a_rx).await.map(|r| r.name), Some("bbbbbbbbbbbbbbbb".into()));
+        a.stop();
+        b.stop();
+    }
+
+    /// Someone outside the salon is neither heard nor answered.
+    #[tokio::test]
+    async fn introduction_needs_the_salon_key() {
+        let (a, mut a_rx) = puncher("aaaaaaaaaaaaaaaa", &Arc::new(Room::new("salon", &[7; 32]))).await;
+        let (b, mut b_rx) = puncher("bbbbbbbbbbbbbbbb", &Arc::new(Room::new("salon", &[8; 32]))).await;
+        a.introduce(b.lan_addr());
+        assert!(next_record(&mut b_rx).await.is_none());
+        assert!(next_record(&mut a_rx).await.is_none());
+        a.stop();
+        b.stop();
+    }
 }

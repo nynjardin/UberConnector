@@ -14,7 +14,10 @@ setting) see the other players as if they were on a real local network.
 - **Salons**: a group of players with its own secret key. You join with an
   invite code or link; admitting newcomers can be required. Moderation:
   moderators, bans with key rotation.
-- **Serverless discovery**, through two paths at once:
+- **Serverless discovery**, through three paths at once:
+  - **UDP BitTorrent trackers** (BEP 15): a tracker returns the addresses
+    of the players already in the salon's swarm in one round trip (0.2 to
+    0.6 s); each one then gets our encrypted presence record directly;
   - **Nostr**: public relays deliver an arriving player's (encrypted)
     presence record in under a second;
   - **BitTorrent DHT** (BEP44): slower, but practically impossible to take
@@ -55,7 +58,7 @@ Planned improvements and the ideas set aside are in [ROADMAP.md](ROADMAP.md).
 
 ## Layout
 
-- `crates/uc-core`: salons, discovery (DHT, Nostr), hole punching, port
+- `crates/uc-core`: salons, discovery (DHT, Nostr, trackers), hole punching, port
   opening, EasyTier control, chat, broadcast relay, IPC protocol.
 - `crates/uc-cli` → `uc-helper.exe`: the engine, with administrator rights.
   Usable from the command line or driven by the app.
@@ -96,7 +99,8 @@ checked after download. The update keeps the user's `uc-data`.
 
 - `UC_NO_TUN=1`: no network adapter, hence no permission prompt.
 - `UC_DATA_DIR`: several engine instances on one machine.
-- `UC_NO_NOSTR=1`: discovery through the DHT only.
+- `UC_NO_NOSTR=1`: discovery without the Nostr relays.
+- `UC_NO_TRACKER=1`: discovery without the UDP BitTorrent trackers.
 - `UC_UPDATE_API`: another address instead of GitHub's release API (for
   testing updates against a local server).
 - `UC_TEST_NOTIFY=1`: shows a Windows notification at start.
@@ -104,7 +108,8 @@ checked after download. The update keeps the user's `uc-data`.
   delay (the session rebuilds itself).
 
 Diagnostic tools (`cargo run -p uc-core --example <name>`):
-`nat_check`, `punch_test`, `nostr_probe`, `portmap_check`, `discovery_probe`.
+`nat_check`, `punch_test`, `nostr_probe`, `tracker_probe`, `portmap_check`,
+`discovery_probe`.
 
 ## Data
 

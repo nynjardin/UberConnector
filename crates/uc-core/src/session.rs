@@ -42,6 +42,9 @@ const POKE_PER_PEER: Duration = Duration::from_secs(30);
 /// A member announced through Nostr is not removed for missing from the DHT
 /// during this delay (its DHT record may not be readable yet).
 const PUSHED_KEEP: Duration = Duration::from_secs(90);
+/// Port opening is awaited this long before our record goes out (NAT-PMP
+/// answers in a few ms; a box that never answers takes about 5 s).
+const PORTMAP_WAIT: Duration = Duration::from_secs(1);
 
 /// What other members see of us; changes apply live.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -241,6 +244,41 @@ fn local_hms() -> String {
 }
 
 /// Records a milestone once (`key` identifies it).
+/// Result of a port opening still running (pending forever once taken).
+async fn finished<T>(task: &mut Option<JoinHandle<T>>) -> Option<Result<T, tokio::task::JoinError>> {
+    match task {
+        Some(t) => {
+            let r = t.await;
+            *task = None;
+            Some(r)
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// Reports the opening of EasyTier's port on the router.
+fn port_map_done(
+    r: Result<Result<crate::portmap::PortMap>, tokio::task::JoinError>,
+    ev: &dyn Fn(String),
+    status: &watch::Sender<Status>,
+    t0: Instant,
+    marks: &mut HashSet<&'static str>,
+) -> Option<crate::portmap::PortMap> {
+    match r {
+        Ok(Ok(pm)) => {
+            ev(format!("Port ouvert sur la box ({}) : joignable directement à {}", pm.method, pm.external));
+            mark(status, t0, marks, "portmap", format!("port ouvert sur la box ({})", pm.method));
+            status.send_modify(|s| s.port_open = pm.method.to_string());
+            Some(pm)
+        }
+        Ok(Err(e)) => {
+            ev(format!("Ouverture automatique du port impossible : {e:#}"));
+            None
+        }
+        Err(_) => None,
+    }
+}
+
 fn mark(status: &watch::Sender<Status>, t0: Instant, done: &mut HashSet<&'static str>, key: &'static str, label: String) {
     if done.insert(key) {
         let line = format!("{:>5.1} s  {label}", t0.elapsed().as_secs_f32());
@@ -291,6 +329,8 @@ enum Disc {
     Found(PeerRecord),
     /// A member's record pushed by a Nostr relay (name of the relay).
     Pushed(PeerRecord, String),
+    /// A member's record received directly, from an address a tracker gave.
+    Introduced(PeerRecord, SocketAddr),
     /// End of a read: every fresh member (others are gone).
     All(Vec<PeerRecord>, Option<usize>),
     Published(usize),
@@ -509,6 +549,17 @@ async fn run(
         });
         tokio::spawn(crate::portmap::PortMap::open(lan_ip, et_port, public_ip))
     });
+    // The punch socket too: the trackers give members its address, and the
+    // hello sent there must get in even where hole punching fails.
+    let use_trackers = std::env::var_os("UC_NO_TRACKER").is_none() && public_punch.is_some();
+    let punch_map = (cfg.port_map && use_trackers).then(|| {
+        let public_ip = public_punch.and_then(|a| match a.ip() {
+            std::net::IpAddr::V4(ip) => Some(ip),
+            _ => None,
+        });
+        let port = sock.local_addr().map(|a| a.port()).unwrap_or(0);
+        tokio::spawn(crate::portmap::PortMap::open(lan_ip, port, public_ip))
+    });
 
     // EasyTier starts without waiting for the presence slots: the virtual IP
     // comes from our id (a rare clash is reported below).
@@ -623,32 +674,29 @@ async fn run(
         std::net::IpAddr::V4(ip) => Some(ip),
         _ => None,
     }));
-    let port_map = match port_map {
-        Some(task) => match tokio::time::timeout(Duration::from_secs(6), task).await {
-            Ok(Ok(Ok(pm))) => {
-                ev(format!("Port ouvert sur la box ({}) : joignable directement à {}", pm.method, pm.external));
-                mark(&status, t0, &mut marks, "portmap", format!("port ouvert sur la box ({})", pm.method));
-                status.send_modify(|s| s.port_open = pm.method.to_string());
-                Some(pm)
-            }
-            Ok(Ok(Err(e))) => {
-                ev(format!("Ouverture automatique du port impossible : {e:#}"));
-                None
-            }
-            _ => {
-                ev("Ouverture automatique du port : la box ne répond pas".into());
-                None
-            }
-        },
-        None => None,
-    };
+    // Port opening is waited for a moment only: a box that never answers
+    // takes about 5 s to give up (NAT-PMP retries, then UPnP), and nobody
+    // could find us meanwhile. Our record goes out now and is published
+    // again if the port opens later (see the session loop).
+    let mut port_map_task = port_map;
+    let mut port_map = None;
+    if let Some(task) = port_map_task.as_mut() {
+        if let Ok(r) = tokio::time::timeout(PORTMAP_WAIT, task).await {
+            port_map_task = None;
+            port_map = port_map_done(r, &ev, &status, t0, &mut marks);
+        }
+    }
     // Reachable from outside: the opened port, otherwise our public IP with
-    // EasyTier's port (works if it is forwarded by hand).
-    let public_direct = match &port_map {
-        Some(pm) => Some(format!("udp://{}", pm.external)),
-        None => public_ip.map(|ip| format!("udp://{ip}:{et_port}")),
+    // EasyTier's port (works if it is forwarded by hand); and the LAN one.
+    // Reachable members are joined at once, without hole punching.
+    let direct_for = |pm: Option<&crate::portmap::PortMap>| -> Vec<String> {
+        let public = match pm {
+            Some(pm) => Some(format!("udp://{}", pm.external)),
+            None => public_ip.map(|ip| format!("udp://{ip}:{et_port}")),
+        };
+        public.into_iter().chain(cfg.use_lan.then(|| format!("udp://{lan_ip}:{et_port}"))).collect()
     };
-    let my_record = PeerRecord {
+    let mut my_record = PeerRecord {
         id: ident.id.clone(),
         name: my_name(),
         avatar: profile.borrow().avatar.clone(),
@@ -656,19 +704,27 @@ async fn run(
         ts: 0,
         punch: public_punch,
         punch_lan: cfg.use_lan.then(|| puncher.lan_addr()),
-        // Public (UPnP / forwarded port) and LAN listeners: reachable members
-        // are joined at once, without hole punching.
-        direct: public_direct
-            .into_iter()
-            .chain(cfg.use_lan.then(|| format!("udp://{lan_ip}:{et_port}")))
-            .collect(),
+        direct: direct_for(port_map.as_ref()),
         chat_port: chat.port(),
     };
+    // The DHT task publishes the latest one.
+    let (direct_tx, direct_rx) = watch::channel(my_record.direct.clone());
 
     // Members subscribed to the salon on Nostr answer at once.
     if let Some(rv) = &rendezvous {
         rv.announce(&my_record);
     }
+    // UDP trackers (see `tracker`): the punch socket's STUN address, which
+    // is also the opened one when the box maps the same port (it usually
+    // does). UC_NO_TRACKER=1 compares without them.
+    puncher.set_intro(room.clone(), &my_record);
+    let mut punch_map_task = punch_map;
+    let mut punch_map = None;
+    let (tr_tx, mut tr_rx) = mpsc::unbounded_channel();
+    let trackers = public_punch.filter(|_| use_trackers).map(|a| {
+        ev(format!("Trackers : annonce de {a}"));
+        crate::tracker::Trackers::start(room.tracker_hash(), a, tr_tx.clone())
+    });
 
     // Discovery task: read the others (each one handed over as soon as it is
     // found), publish our record, repeat.
@@ -688,6 +744,7 @@ async fn run(
         let mut rec = my_record.clone();
         let my_id = ident.id.clone();
         let mut profile = profile.clone();
+        let mut direct_rx = direct_rx;
         let poke = poke.clone();
         tokio::spawn(async move {
             let mut round = 0u32;
@@ -711,6 +768,7 @@ async fn run(
                     }
                     rec.avatar = p.avatar.clone();
                 }
+                rec.direct = direct_rx.borrow_and_update().clone();
                 rec.ts = discovery::now_secs();
                 match disco.publish(&rec, &slots).await {
                     Ok(slot) => {
@@ -720,11 +778,12 @@ async fn run(
                 }
                 round += 1;
                 let wait = if round < 6 { DISCOVERY_FAST } else { DISCOVERY_SLOW };
-                // A profile change is published right away; a newcomer
-                // probing us is looked up right away.
+                // A profile change (or a port opened late) is published right
+                // away; a newcomer probing us is looked up right away.
                 tokio::select! {
                     _ = tokio::time::sleep(wait) => {}
                     r = profile.changed() => if r.is_err() { return },
+                    r = direct_rx.changed() => if r.is_err() { return },
                     _ = poke.notified() => {
                         let min = read_at + DISCOVERY_POKE_MIN;
                         tokio::time::sleep_until(min.into()).await;
@@ -825,6 +884,36 @@ async fn run(
                     let _ = pushed_tx.send(Disc::Pushed(r, relay.trim_start_matches("wss://").to_string()));
                 }
             },
+            Some(e) = tr_rx.recv() => match e {
+                crate::tracker::TrEvent::Ready(host) => {
+                    mark(&status, t0, &mut marks, "tracker", format!("tracker prêt ({host})"));
+                }
+                crate::tracker::TrEvent::Peer(addr, host) => {
+                    // Known members' addresses come back too: not introduced.
+                    if puncher.introduce(addr) {
+                        tracing::info!("tracker {host} : adresse inconnue {addr}, présentation envoyée");
+                    }
+                }
+            },
+            Some(r) = finished(&mut port_map_task) => {
+                port_map = port_map_done(r, &ev, &status, t0, &mut marks);
+                if port_map.is_some() {
+                    my_record.direct = direct_for(port_map.as_ref());
+                    let _ = direct_tx.send(my_record.direct.clone());
+                    if let Some(rv) = &rendezvous {
+                        rv.announce(&my_record);
+                    }
+                    puncher.set_intro(room.clone(), &my_record);
+                }
+            }
+            Some(r) = finished(&mut punch_map_task) => match r {
+                Ok(Ok(pm)) => {
+                    tracing::info!("port de perçage ouvert sur la box ({}) : {}", pm.method, pm.external);
+                    punch_map = Some(pm);
+                }
+                Ok(Err(e)) => tracing::info!("ouverture du port de perçage impossible : {e:#}"),
+                Err(_) => {}
+            },
             Some(d) = disc_rx.recv() => {
                 let (recs, full) = match d {
                     Disc::Published(slot) => {
@@ -839,6 +928,11 @@ async fn run(
                     }
                     Disc::Pushed(r, relay) => {
                         mark(&status, t0, &mut marks, "pushed", format!("premier membre trouvé via Nostr ({}, {relay})", r.name));
+                        pushed_at.insert(r.id.clone(), Instant::now());
+                        (vec![r], false)
+                    }
+                    Disc::Introduced(r, from) => {
+                        mark(&status, t0, &mut marks, "introduced", format!("premier membre trouvé via les trackers ({}, {from})", r.name));
                         pushed_at.insert(r.id.clone(), Instant::now());
                         (vec![r], false)
                     }
@@ -912,6 +1006,10 @@ async fn run(
                             poked.insert(id, Instant::now());
                             poke.notify_one();
                         }
+                        continue;
+                    }
+                    PunchEvent::Record { rec, from } => {
+                        let _ = pushed_tx.send(Disc::Introduced(rec, from));
                         continue;
                     }
                 };
@@ -1119,8 +1217,18 @@ async fn run(
         g.stop();
     }
     et.stop().await;
+    if let Some(t) = trackers {
+        t.stop().await;
+    }
     if let Some(pm) = port_map {
         pm.close().await;
+    }
+    if let Some(pm) = punch_map {
+        pm.close().await;
+    }
+    // Still trying: a mapping made after the end would stay open.
+    for t in [port_map_task, punch_map_task].into_iter().flatten() {
+        t.abort();
     }
     ev("Session arrêtée".into());
     Ok(exit)

@@ -5,6 +5,10 @@
 # User data: identity private key, salon keys, settings. NEVER publish.
 uc-data/
 
+# Third-party SmartSteamEmu copy, studied locally only (see ROADMAP). Never commit.
+/SmartSteamEmu*/
+/SmartSteamEmu*.7z
+
 # EasyTier binaries (downloaded separately, see README) and their logs
 /vendor/
 *.log

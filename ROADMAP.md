@@ -19,6 +19,87 @@ with the reasoning behind each, so that they can be picked up later.
    publishes, so it trusts whatever the GitHub account serves. Signing the
    zip with a key kept off GitHub, and checking it in the app, would
    protect users if the account were compromised.
+3. **Hole punching through symmetric NATs.** Today a player behind a
+   symmetric NAT only gets advice, and reaches others through a relaying
+   member. HyperDHT (Holepunch) shows a way through: the symmetric side
+   opens many sockets (a few hundred) towards the other side, which
+   probes random ports; by the birthday effect one pair usually meets
+   within seconds. It fits in `punch.rs`, with no new dependency, and
+   only kicks in when one side reports a symmetric NAT. It does not work
+   when both sides are symmetric (the relay stays the fallback there).
+4. **Punching started at the same moment on both sides.** One failure
+   (2026-10-29) came from one side probing about 9 s before the other.
+   The Nostr hello already brings both sides close in time; a small
+   "punch now" message with a start time, sent through Nostr, would make
+   both start together, as HyperDHT does by relaying the handshake.
+
+### "Launch the game and play" (inspired by SmartSteamEmu)
+
+SmartSteamEmu's online mode (studied 2026-11-14, version 1.4.7) needs no
+setup at all: the players with the same key (or, without a key, everybody
+playing the same game) find each other as soon as the game starts. It does
+it with public **UDP BitTorrent trackers** (BEP 15) and STUN, not the DHT:
+`SHA1(":SmartSteamEmu:" + key or appid)` is announced with the STUN port
+every 15 s, and every address returned gets the emulator's normal LAN
+discovery packets, which punches the NATs as a side effect. Game timeouts
+do not matter because discovery starts when the DLL loads, long before the
+multiplayer menu. Measured with `examples/tracker_probe.rs`: a tracker
+introduces two players in 0.2 to 0.6 s (the DHT takes 6 to 14 s), and with
+the router port opened (NAT-PMP / UPnP) the two test PCs connected
+directly. The following steps build on that, in this order:
+
+5. **Trackers as a third rendezvous** (built in `uc_core::tracker`, 0.2.2).
+   Measured between the two test PCs: the player arriving second finds the
+   first one through the trackers in 1.9 s (Nostr: 1.6 s), the first one
+   learns about it within its 3 s re-announce, and both sides have punched
+   about 2 s after the second one started. Next to Nostr and the
+   DHT: the salon's info_hash is derived from the salon key, and the
+   addresses returned get an encrypted hello carrying our presence record,
+   so they enter the usual punching path. Re-announce every 3 s during the
+   first minute (trackers never push: the first one there only sees the
+   next at its own announce), then rarely. Working trackers on
+   2026-11-14: open.demonii.com:1337, explodie.org:6969,
+   tracker-udp.gbitt.info:80, open.stealth.si:80,
+   tracker.opentrackr.org:1337, tracker.qu.ax:6969,
+   tracker.torrent.eu.org:451, exodus.desync.com:6969,
+   tracker.internetwarriors.net:1337 (pads replies with 0.0.0.0:65535).
+   Too slow to be useful: tracker.theoks.net (20 to 34 s),
+   tracker.dler.org (about 140 s).
+6. **Automatic salon per game.** A salon derived from the game's identity
+   (exe name or hash) plus an optional key, as SSE does with the appid
+   and its `OnlineKey`: without a key, everyone playing that game meets;
+   with a key, only friends. Started when the game starts, through a
+   small proxy DLL dropped next to the game (`dinput8.dll`,
+   `version.dll`, `wsock32.dll`...) that reads a `uc.ini` and asks the
+   app to join, or through a shortcut that launches the game through the
+   app. The salon is up by the time the player reaches the multiplayer
+   menu. Needs a decision on what "the game's identity" is, so that two
+   copies of the same game (other folder, other patch) still meet.
+7. **Capture the game's traffic inside the game (Winsock hooks).** What
+   SSE does for the Steam API, done at the socket level for any LAN game:
+   a DLL injected in the game intercepts `sendto` / `recvfrom` /
+   `WSASendTo` / `WSARecvFrom`, `bind`, `connect`, plus the calls that
+   reveal local addresses (`gethostname`, `getsockname`,
+   `GetAdaptersInfo`), and hands the traffic to the app on a local port.
+   The game sees one virtual 10.x address per player. Benefits: no
+   administrator rights, no virtual adapter, and no "which adapter does
+   the game broadcast on" problem, because a broadcast to
+   255.255.255.255 is caught before it reaches any adapter (this would
+   fix the "IP choisie" case of the game network test). Order: first
+   catch only broadcasts (EasyTier keeps carrying the rest), test on
+   Burnout 3; then all UDP; then TCP (connections to a virtual address go
+   to a local relay of the app). Limits: anti-cheats may refuse the
+   injection, 32 and 64 bit builds are needed, IPX games need a separate
+   wrapper, DirectPlay over TCP/IP goes through Winsock and is covered.
+   EasyTier would remain the fallback for games that refuse the DLL.
+8. **Talking in game with a hotkey.** SSE has a full in-game overlay
+   (`SSEOverlay.dll`, about 1 MB, hooks DX9/DX11/OpenGL). Old LAN games
+   also use DirectDraw, D3D7/8 or Glide, so a real overlay is costly.
+   Steps: first a global hotkey opening a small always-on-top chat window
+   with a sound on new messages (works in windowed and borderless, not in
+   exclusive fullscreen); maybe push-to-talk voice, more useful during a
+   match and with nothing to draw (voice was paused, see below); a real
+   overlay only later, carried by the DLL of item 7.
 
 ## Done from this list
 
@@ -90,6 +171,18 @@ Hence the current design: **Nostr for speed, the DHT for robustness.**
   start filtering without notice.
 - Hyperswarm, libp2p / IPFS: much smaller networks, heavy dependencies,
   not faster in practice.
+- Pears (Holepunch's runtime, built on Hyperswarm / HyperDHT): JavaScript
+  only, apps run inside its own runtime; adopting it means a rewrite.
+  Two of its ideas are kept above (items 3 and 4).
+- Holochain: a framework for distributed apps with validated shared data,
+  a heavy background process and bootstrap / signalling servers. Made for
+  data, not for low-latency game traffic. At most relevant to the paused
+  signed reports and votes, where signed DHT items plus Nostr suffice.
+- iroh (n0, Rust): QUIC, hole punching, connect by public key, plus
+  gossip and peer-to-peer file transfer (`iroh-blobs`). The closest to
+  this codebase and worth evaluating if the home-made punching is ever
+  replaced, or for file sharing. Limits: its default relays are run by
+  n0 and far from some players, and it overlaps with EasyTier.
 - A server of our own: the simplest and fastest, and exactly what this
   project refuses to depend on.
 
@@ -102,6 +195,16 @@ Hence the current design: **Nostr for speed, the DHT for robustness.**
   side reads all slots from the DHT. Both could use the pushed copies.
 - After a member restarts, EasyTier keeps its previous node for about
   20 s (the app hides the duplicate line meanwhile).
+- In game mode, the EasyTier link comes 6 to 10 s after the NAT is
+  punched (seen with 0.2.2 on 2026-11-14: punched at 1.9 s, link at
+  10.6 s; 14.5 s on the other PC). `easytier-cli connector add` fails
+  with "instance default (…)" and is retried every 2 s until the virtual
+  adapter shows up, so the Wintun adapter creation is the likely cause
+  (EasyTier logs "Failed to find matching adapter name" at start: it is
+  created anew each session). Without an adapter the link comes in about
+  1 s. Now the slowest step of a join.
+- About 15 s after the first EasyTier link, the path shows "plus de lien"
+  for 1 s, then "direct" again (seen twice on 2026-11-14).
 - `session::run` is about 700 lines long.
 - No tests for `salons.rs`.
 - Chat comes back about 12 seconds late after the other side restarts.
