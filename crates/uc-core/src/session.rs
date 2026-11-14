@@ -28,6 +28,9 @@ const NET_CHECK_EVERY: Duration = Duration::from_secs(5);
 const NET_STUN_EVERY: u64 = 24;
 /// While the session starts, EasyTier's peer list is read every second.
 const CLI_FAST_PHASE: Duration = Duration::from_secs(60);
+/// A member's direct addresses (router-opened port, LAN) are only dialed if
+/// no punched path came up this long after we met it (see `add_direct`).
+const DIRECT_GRACE: Duration = Duration::from_secs(5);
 /// DHT reads: fast while the salon forms, then this often (a newcomer
 /// probing us also triggers a read right away).
 const DISCOVERY_FAST: Duration = Duration::from_secs(10);
@@ -324,6 +327,8 @@ struct PeerState {
     connector_error: Option<String>,
     /// Direct URLs EasyTier currently has for this member.
     direct: Vec<String>,
+    /// When we met this member in this session.
+    seen: Instant,
 }
 
 /// Discovery task -> session loop.
@@ -341,10 +346,22 @@ enum Disc {
     Published(usize),
 }
 
-/// Reachable listeners of a member (UPnP, forwarded port, same LAN): joined
-/// at once, from both sides. Follows the member's record (its addresses
-/// change between sessions); retried while EasyTier's API is not ready.
-async fn add_direct(et: &EasyTier, p: &mut PeerState) {
+/// Reachable listeners of a member (UPnP, forwarded port, same LAN): the
+/// fallback when hole punching fails. Follows the member's record (its
+/// addresses change between sessions); retried while EasyTier's API is not
+/// ready.
+///
+/// Not dialed while the punched path works (`punched`), nor before it had
+/// `DIRECT_GRACE` to come up. A second connection to the same member gets
+/// part of the traffic, and when the network blinks (some network cards
+/// reset a few seconds after the virtual adapter appears) one side drops it
+/// at once while the other keeps sending into it until its pingpong gives up,
+/// about 10 s of lost traffic. The punched path goes through our bridge on
+/// 127.0.0.1, which EasyTier never sees fail.
+async fn add_direct(et: &EasyTier, p: &mut PeerState, punched: bool) {
+    if p.direct.is_empty() && (punched || p.seen.elapsed() < DIRECT_GRACE) {
+        return;
+    }
     if p.direct == p.rec.direct {
         return;
     }
@@ -364,6 +381,11 @@ async fn add_direct(et: &EasyTier, p: &mut PeerState) {
     if p.rec.direct.iter().all(|u| p.direct.contains(u)) {
         p.direct = p.rec.direct.clone();
     }
+}
+
+/// Our punched path to that member answered recently.
+fn path_alive(puncher: &punch::Puncher, id: &str) -> bool {
+    puncher.path(id).is_some_and(|(_, age)| age <= punch::PATH_DEAD_AFTER)
 }
 
 /// A member left: EasyTier stops dialing its addresses.
@@ -1009,12 +1031,13 @@ async fn run(
                         ev(format!("Découvert : {} ({})", r.name, r.vip));
                         peers.insert(r.id.clone(), PeerState {
                             rec: r.clone(), wanted: None, connector: None,
-                            connector_error: None, direct: vec![],
+                            connector_error: None, direct: vec![], seen: Instant::now(),
                         });
                     }
                     let p = peers.get_mut(&r.id).unwrap();
                     p.rec = r;
-                    add_direct(&et, p).await;
+                    let punched = path_alive(&puncher, &p.rec.id);
+                    add_direct(&et, p, punched).await;
                 }
                 // Partial results only add members; a full read also removes.
                 if !full {
@@ -1096,7 +1119,8 @@ async fn run(
                     if let Some(msg) = sync_connector(&et, p).await {
                         ev(msg);
                     }
-                    add_direct(&et, p).await;
+                    let punched = path_alive(&puncher, &p.rec.id);
+                    add_direct(&et, p, punched).await;
                 }
                 // A member's path went silent: it probably restarted from a
                 // new address. Look its new record up quickly (every 3 s).

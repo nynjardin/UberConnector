@@ -212,17 +212,18 @@ Hence the current design: **Nostr for speed, the DHT for robustness.**
   on a router (NAT-PMP / UPnP), so two players without one could not link,
   and the path label "NAT percé" was misleading. `--bind-device false`:
   bridge link 0.2 to 0.6 s after the punch in local tests.
-- The 1 s drop about 15 s after the first link (seen on 3 game sessions on
-  2026-11-14, and on chat-only salons at the same moments): EasyTier closed
-  the first connection after it stopped receiving ("pingpong loss too
-  much … no other ingress packets"), then reconnected. NOT fixed by 0.2.3
-  (two-PC test, 2026-11-14): every session in the log shows
-  `sync_route_info failed` on all salons at once, then that close, 24 to
-  30 s after EasyTier starts; traffic is lost for several seconds, then
-  the link stays stable. The closed connection had received only 15
-  packets (a secondary one). Suspect for 0.2.4: EasyTier's own runtime
-  UPnP/NAT-PMP mapping (on by default, `--disable-upnp`) of the same port
-  our `portmap.rs` already opens.
+- The drop about 20 s after the first link, FOUND 2026-11-14 (EasyTier info
+  log of the remote PC + its System event log): its Intel I218-V NIC
+  (e1dexpress) loses link for ~4 s about 5 s after Wintun creates the
+  virtual adapter (events 27/32), so its whole Internet is down (DNS fails,
+  error 10065). EasyTier then drops its connection through the router-opened
+  port, while the other side keeps sending into it until its pingpong gives
+  up ~10 s later ("pingpong loss too much ... no other ingress"). 0.2.4:
+  router-opened and LAN addresses are only dialed when no punched path came
+  up within 5 s (or it went silent), so there is one connection per member,
+  through our 127.0.0.1 bridge. The NIC reset itself remains: a persistent
+  adapter per salon (not recreated each session) would avoid it and the
+  10 s wait.
 - `session::run` is about 700 lines long.
 - No tests for `salons.rs`.
 - Chat comes back about 12 seconds late after the other side restarts.
