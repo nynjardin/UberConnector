@@ -257,6 +257,7 @@ async fn main() -> Result<()> {
     }
     let last = status.borrow().clone();
     let r = session.stop().await;
+    uc_core::adapter::release();
     if let Ok(dir) = uc_core::easytier::find_dir() {
         uc_core::system::unload_our_windivert(&dir);
     }

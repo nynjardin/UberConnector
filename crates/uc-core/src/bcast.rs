@@ -131,7 +131,7 @@ fn watch_adapters(shared: Arc<Shared>) {
                 continue;
             }
             // Ours (Wintun) only carries IP packets: capture at the IP level.
-            let ip_level = a.name.starts_with("UC-");
+            let ip_level = crate::adapter::is_ours(&a.name);
             match capture_socket(ip, ip_level) {
                 Ok(sock) => {
                     tracing::info!("annonces de jeux : écoute de la carte « {} » ({ip})", a.name);

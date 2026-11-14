@@ -383,6 +383,15 @@ async fn add_direct(et: &EasyTier, p: &mut PeerState, punched: bool) {
     }
 }
 
+/// Leftover addresses on our card (see `adapter::clear_addresses`).
+fn clear_card_addresses() {
+    match crate::adapter::clear_addresses() {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("carte réseau : {n} ancienne(s) adresse(s) retirée(s)"),
+        Err(e) => tracing::warn!("carte réseau : anciennes adresses non retirées : {e:#}"),
+    }
+}
+
 /// Our punched path to that member answered recently.
 fn path_alive(puncher: &punch::Puncher, id: &str) -> bool {
     puncher.path(id).is_some_and(|(_, age)| age <= punch::PATH_DEAD_AFTER)
@@ -627,7 +636,7 @@ async fn run(
         network_secret: &room.network_secret,
         ipv4_cidr: format!("{vip}/16"),
         hostname: &et_hostname,
-        dev_name: format!("UC-{}", &room.id[..6.min(room.id.len())]),
+        dev_name: crate::adapter::NAME.into(),
         tun: cfg.game,
         open_tcp_ports: vec![chat.port()],
         socks5_port,
@@ -637,6 +646,20 @@ async fn run(
         relays: &cfg.relays,
         log_dir: &log_dir,
     };
+    // Game mode: our one card, created once per engine run and reused by
+    // every session after that (see `adapter`).
+    if cfg.game && !easytier::test_no_tun() && crate::system::is_admin() {
+        let at = t0.elapsed();
+        match crate::adapter::ensure(&et_dir).await {
+            Ok(true) => {
+                let took = (t0.elapsed() - at).as_secs_f32();
+                mark(&status, t0, &mut marks, "tun_seen", format!("carte réseau créée en {took:.1} s"));
+            }
+            Ok(false) => mark(&status, t0, &mut marks, "tun_seen", "carte réseau déjà prête".into()),
+            Err(e) => ev(format!("Carte réseau {} : {e:#} (EasyTier en crée une)", crate::adapter::NAME)),
+        }
+        clear_card_addresses();
+    }
     let mut et = EasyTier::spawn(&et_dir, &et_cfg)?;
     // Restart times of EasyTier (it is restarted if it stops).
     let mut et_restarts: Vec<Instant> = vec![];
@@ -1106,6 +1129,10 @@ async fn run(
                         cause.map(|c| format!(" (cause : {c})")).unwrap_or_default()
                     ));
                     et_restarts.push(Instant::now());
+                    // Its address is still on our card: it would not start.
+                    if cfg.game && !easytier::test_no_tun() && crate::system::is_admin() {
+                        clear_card_addresses();
+                    }
                     et = EasyTier::spawn(&et_dir, &et_cfg)?;
                     // Connectors are added again once its API answers.
                     for p in peers.values_mut() {
@@ -1284,6 +1311,10 @@ async fn run(
         g.stop();
     }
     et.stop().await;
+    // Our card keeps EasyTier's address otherwise (see `adapter`).
+    if cfg.game && !easytier::test_no_tun() && crate::system::is_admin() {
+        clear_card_addresses();
+    }
     if let Some(t) = trackers {
         t.stop().await;
     }

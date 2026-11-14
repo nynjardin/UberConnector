@@ -221,9 +221,18 @@ Hence the current design: **Nostr for speed, the DHT for robustness.**
   up ~10 s later ("pingpong loss too much ... no other ingress"). 0.2.4:
   router-opened and LAN addresses are only dialed when no punched path came
   up within 5 s (or it went silent), so there is one connection per member,
-  through our 127.0.0.1 bridge. The NIC reset itself remains: a persistent
-  adapter per salon (not recreated each session) would avoid it and the
-  10 s wait.
+  through our 127.0.0.1 bridge. The user's remote PC resets its NIC with
+  every VPN adapter (Radmin, ZeroTier too).
+- 0.2.5: one shared adapter "UberConnector" (`adapter.rs`), created by the
+  elevated engine the first time a salon goes into game mode and kept until
+  it exits (Wintun removes it then). EasyTier's rust-tun opens an adapter by
+  name before creating one, so later sessions reuse it: no device install,
+  no ~10 s wait. EasyTier never removes the address it sets, and fails to
+  start when it is already there (seen when the game salon came back to a
+  salon used earlier), so the engine clears our card's IPv4 addresses
+  before and after each game-mode EasyTier. Confirmed on two PCs on
+  2026-11-14 (switching game salons, no drop, no error). The remote PC's
+  Intel NIC still resets when the card is created.
 - `session::run` is about 700 lines long.
 - No tests for `salons.rs`.
 - Chat comes back about 12 seconds late after the other side restarts.

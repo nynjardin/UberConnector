@@ -62,7 +62,17 @@ pub struct EasyTier {
 impl EasyTier {
     pub fn spawn(dir: &Path, cfg: &CoreConfig) -> Result<Self> {
         std::fs::create_dir_all(cfg.log_dir)?;
+        let et_log = std::env::var("UC_ET_LOG").ok();
         let mut cmd = Command::new(dir.join("easytier-core.exe"));
+        // EasyTier reads RUST_LOG for per-module levels, on top of the level
+        // below. These modules log a warning for every failed dial, every
+        // second (over 90 % of the lines seen on 2026-11-14), not problems.
+        // Kept in full with UC_ET_LOG (diagnostic).
+        if et_log.is_none() {
+            cmd.env("RUST_LOG", QUIET_MODULES);
+        } else {
+            cmd.env_remove("RUST_LOG");
+        }
         cmd.current_dir(dir)
             .args(["--network-name", cfg.network_name])
             // Not on the command line: any local process can read that of
@@ -85,9 +95,11 @@ impl EasyTier {
             .args(["--console-log-level", "warn"])
             // "info" logs every unroutable multicast packet (mDNS...): ~1 MB/min.
             // `UC_ET_LOG=info` (diagnostic) shows the adapter setup steps.
-            .args(["--file-log-level", &std::env::var("UC_ET_LOG").unwrap_or_else(|_| "warn".into())])
+            .args(["--file-log-level", &et_log.clone().unwrap_or_else(|| "warn".into())])
             .arg("--file-log-dir")
             .arg(cfg.log_dir)
+            // Default: 10 files of up to 100 MB. A few MB tell what happened.
+            .args(["--file-log-size", "4", "--file-log-count", "2"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             // A crash (panic) only shows up there. Appended, so a restart
@@ -190,6 +202,8 @@ pub struct EtRoute {
 
 /// Returns a free local port usable for both TCP and UDP.
 const STDERR_LOG: &str = "easytier-stderr.log";
+/// Modules whose warnings are routine (see `spawn`): errors only.
+const QUIET_MODULES: &str = "easytier::tunnel::udp=error,easytier::connector::manual=error,easytier::proto::rpc_impl::bidirect=error,easytier::common::stun=error";
 const STDERR_MAX: u64 = 1 << 20;
 
 fn stderr_log(log_dir: &Path) -> std::io::Result<std::fs::File> {

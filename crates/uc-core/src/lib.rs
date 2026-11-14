@@ -1,3 +1,4 @@
+pub mod adapter;
 pub mod bcast;
 pub mod cache;
 pub mod chat;

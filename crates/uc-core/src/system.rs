@@ -92,7 +92,7 @@ fn ipv4_interfaces() -> Vec<(String, u32, u32, bool)> {
 pub fn subnet_in_use(subnet: u8) -> Option<String> {
     if_addrs::get_if_addrs().ok()?.into_iter().find_map(|i| match i.ip() {
         std::net::IpAddr::V4(ip)
-            if ip.octets()[0] == 10 && ip.octets()[1] == subnet && !i.name.starts_with("UC-") =>
+            if ip.octets()[0] == 10 && ip.octets()[1] == subnet && !crate::adapter::is_ours(&i.name) =>
         {
             Some(i.name)
         }

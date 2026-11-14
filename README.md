@@ -5,8 +5,9 @@
 A virtual LAN for playing "LAN" games over the Internet: no server, no
 account, no installation (portable Windows app).
 
-Unlike ZeroTier or Radmin, the virtual network adapter only exists while you
-play. Games that find their lobbies through UDP broadcasts (with no IP
+Unlike ZeroTier or Radmin, the virtual network adapter ("UberConnector")
+only exists while the app runs, from the first time a salon goes into game
+mode; it is removed when you quit. Games that find their lobbies through UDP broadcasts (with no IP
 setting) see the other players as if they were on a real local network.
 
 ## How it works
@@ -29,7 +30,9 @@ setting) see the other players as if they were on a real local network.
 - **Relaying through members**: when two players cannot reach each other
   directly, a third one who sees both relays their traffic (EasyTier mesh).
 - **Salon network**: [EasyTier](https://github.com/EasyTier/EasyTier)
-  encrypts the traffic and creates the Wintun adapter in "game mode". Game
+  encrypts the traffic. In "game mode" it uses our single Wintun adapter,
+  created once by the engine and shared by whichever salon is in game mode
+  (one at a time), with that salon's IP. Game
   announcements sent to 255.255.255.255 are captured and relayed into the
   salon.
 - **Around it**: chat without history, game network test, per-player link

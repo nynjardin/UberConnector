@@ -152,5 +152,7 @@ pub async fn run(port: u16, token: String, data_dir: PathBuf) -> Result<()> {
     for id in ids {
         stop(&mut sessions, &id).await;
     }
+    // Our game-mode card: Wintun removes it.
+    uc_core::adapter::release();
     Ok(())
 }
