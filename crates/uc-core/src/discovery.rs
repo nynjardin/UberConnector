@@ -38,6 +38,15 @@ pub struct PeerRecord {
     /// Chat port, reached through the salon network at `vip`.
     #[serde(default)]
     pub chat_port: u16,
+    /// In game mode in this salon (virtual card, game traffic); None from
+    /// versions <= 0.2.5, which do not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game: Option<bool>,
+    /// Our NAT from STUN: "cone" or "symmetric"; None when unknown or from
+    /// versions <= 0.2.5. Decides who does what in birthday punching
+    /// (see `punch`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat: Option<String>,
 }
 
 pub fn now_secs() -> u64 {
@@ -183,7 +192,21 @@ mod tests {
             punch_lan: None,
             direct: vec![],
             chat_port: 0,
+            game: None,
+            nat: None,
         })
+    }
+
+    /// Records of versions <= 0.2.5 have no `game`; unknown stays unwritten.
+    #[test]
+    fn game_flag_is_optional() {
+        let old = rec("aa", 1, 1).unwrap();
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("game"), "{json}");
+        assert_eq!(serde_json::from_str::<PeerRecord>(&json).unwrap().game, None);
+        let playing = PeerRecord { game: Some(true), ..old };
+        let back: PeerRecord = serde_json::from_str(&serde_json::to_string(&playing).unwrap()).unwrap();
+        assert_eq!(back.game, Some(true));
     }
 
     #[test]

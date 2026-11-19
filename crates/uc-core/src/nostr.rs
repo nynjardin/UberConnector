@@ -48,9 +48,17 @@ const ANSWER_EVERY: Duration = Duration::from_secs(5);
 /// What we send: our presence record, and whether the others should answer.
 #[derive(Serialize, Deserialize)]
 struct Msg {
-    /// "hello" (just arrived: please answer) or "answer".
+    /// "hello" (just arrived: please answer), "answer", or "punch" (we
+    /// start probing `to` now: it should probe us at the same time).
+    /// Older versions only answer "hello" and take the record of the rest.
     t: String,
     rec: PeerRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    /// With "punch": a birthday attempt (one side behind a symmetric NAT,
+    /// see `punch`), not a plain probing window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    birthday: bool,
 }
 
 pub enum RvEvent {
@@ -58,6 +66,9 @@ pub enum RvEvent {
     Connected(String),
     /// A member's fresh record, pushed by a relay.
     Record(PeerRecord, String),
+    /// That member (record sent just before) starts probing us now; true:
+    /// a birthday attempt.
+    Punch(String, bool),
 }
 
 struct Shared {
@@ -110,7 +121,15 @@ impl Rendezvous {
     /// connecting later get it too.
     pub fn announce(&self, rec: &PeerRecord) {
         *self.shared.record.lock().unwrap() = Some(rec.clone());
-        if let Some(ev) = self.shared.event("hello") {
+        if let Some(ev) = self.shared.event("hello", None) {
+            let _ = self.shared.out.send(ev);
+        }
+    }
+
+    /// Asks member `to` to probe us now, as we do (see `punch`): both
+    /// sides then probe during the same window.
+    pub fn punch(&self, to: &str, birthday: bool) {
+        if let Some(ev) = self.shared.event_to("punch", Some(to), birthday) {
             let _ = self.shared.out.send(ev);
         }
     }
@@ -118,10 +137,14 @@ impl Rendezvous {
 
 impl Shared {
     /// `["EVENT", …]` carrying our current record, freshly dated.
-    fn event(&self, t: &str) -> Option<String> {
+    fn event(&self, t: &str, to: Option<&str>) -> Option<String> {
+        self.event_to(t, to, false)
+    }
+
+    fn event_to(&self, t: &str, to: Option<&str>, birthday: bool) -> Option<String> {
         let mut rec = self.record.lock().unwrap().clone()?;
         rec.ts = discovery::now_secs();
-        let plain = serde_json::to_vec(&Msg { t: t.into(), rec }).ok()?;
+        let plain = serde_json::to_vec(&Msg { t: t.into(), rec, to: to.map(String::from), birthday }).ok()?;
         let ev = signed_event(&self.key, &self.topic, &hex::encode(self.room.encrypt(&plain)));
         Some(json!(["EVENT", ev]).to_string())
     }
@@ -168,12 +191,17 @@ impl Shared {
                 due
             };
             if due {
-                if let Some(ev) = self.event("answer") {
+                if let Some(ev) = self.event("answer", None) {
                     let _ = self.out.send(ev);
                 }
             }
         }
+        // Every member sees it (one topic per salon); only `to` acts on it.
+        let punch = (msg.t == "punch" && msg.to.as_deref() == Some(self.my_id.as_str())).then(|| msg.rec.id.clone());
         let _ = self.events.send(RvEvent::Record(msg.rec, relay.to_string()));
+        if let Some(id) = punch {
+            let _ = self.events.send(RvEvent::Punch(id, msg.birthday));
+        }
     }
 }
 
@@ -210,7 +238,7 @@ async fn relay_session(shared: &Shared, url: &str, worked: &mut bool) -> Result<
     let filter = json!({"kinds": [KIND], "#t": [shared.topic], "since": since});
     tx.send(Message::text(json!(["REQ", "uc", filter]).to_string())).await?;
     // Our hello, if our record is known already (otherwise `announce` sends it).
-    if let Some(ev) = shared.event("hello") {
+    if let Some(ev) = shared.event("hello", None) {
         tx.send(Message::text(ev)).await?;
     }
     let mut ping = tokio::time::interval(PING_EVERY);
@@ -314,8 +342,10 @@ mod tests {
             punch_lan: None,
             direct: vec![],
             chat_port: 0,
+            game: None,
+            nat: None,
         };
-        let msg = serde_json::to_vec(&Msg { t: "answer".into(), rec }).unwrap();
+        let msg = serde_json::to_vec(&Msg { t: "answer".into(), rec, to: None, birthday: false }).unwrap();
         // Another salon's key: ignored.
         let stranger = Room::new("salon", &[8; 32]);
         rv.on_event(&signed_event(&new_key(), &rv.topic, &hex::encode(stranger.encrypt(&msg))), "r");
@@ -326,5 +356,53 @@ mod tests {
         rv.on_event(&ev, "r2");
         assert!(matches!(rx.try_recv(), Ok(RvEvent::Record(r, _)) if r.id == "other"));
         assert!(rx.try_recv().is_err());
+    }
+    /// A punch request reaches every member; only the one named acts on it.
+    #[test]
+    fn punch_request_is_for_one_member() {
+        let room = Arc::new(Room::new("salon", &[7; 32]));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rv = Shared {
+            topic: room.nostr_topic(),
+            room: room.clone(),
+            key: new_key(),
+            my_id: "me".into(),
+            record: Mutex::new(None),
+            seen: Mutex::new((HashSet::new(), VecDeque::new())),
+            answered: Mutex::new(HashMap::new()),
+            out: broadcast::channel(4).0,
+            events: tx,
+        };
+        let rec = PeerRecord {
+            id: "other".into(),
+            name: "B".into(),
+            avatar: String::new(),
+            vip: std::net::Ipv4Addr::new(10, 1, 0, 2),
+            ts: discovery::now_secs(),
+            punch: None,
+            punch_lan: None,
+            direct: vec![],
+            chat_port: 0,
+            game: None,
+            nat: None,
+        };
+        let send = |to: &str| {
+            let msg = serde_json::to_vec(&Msg { t: "punch".into(), rec: rec.clone(), to: Some(to.into()), birthday: true }).unwrap();
+            rv.on_event(&signed_event(&new_key(), &rv.topic, &hex::encode(room.encrypt(&msg))), "r");
+        };
+        send("third");
+        assert!(matches!(rx.try_recv(), Ok(RvEvent::Record(..))));
+        assert!(rx.try_recv().is_err());
+        send("me");
+        assert!(matches!(rx.try_recv(), Ok(RvEvent::Record(..))));
+        assert!(matches!(rx.try_recv(), Ok(RvEvent::Punch(id, true)) if id == "other"));
+        // Older versions read it as a plain record (unknown field ignored).
+        #[derive(Deserialize)]
+        struct OldMsg {
+            t: String,
+            rec: PeerRecord,
+        }
+        let old: OldMsg = serde_json::from_slice(&serde_json::to_vec(&Msg { t: "punch".into(), rec, to: Some("me".into()), birthday: true }).unwrap()).unwrap();
+        assert_eq!((old.t.as_str(), old.rec.id.as_str()), ("punch", "other"));
     }
 }

@@ -34,6 +34,8 @@ async fn main() -> anyhow::Result<()> {
         punch_lan: Some(puncher.lan_addr()),
         direct: vec![],
         chat_port: 0,
+        game: None,
+        nat: None,
     };
     let mut slots = disco.read_slots(|_| {}).await;
     for _ in 0..8 {

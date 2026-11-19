@@ -152,6 +152,13 @@ function pathLabel(m, short = false) {
   return m.path;
 }
 
+// We play in this salon and that member does not (members on versions
+// <= 0.2.5 do not say: no warning for them).
+function notPlaying(salon, m) {
+  return state.settings.game_salon === salon.id && m.game === false;
+}
+const NOT_PLAYING_NOTE = "{name} n'est pas en mode jeu dans ce salon (« Chat seulement ») : les jeux ne le verront pas, et le test du réseau de jeu ne peut pas l'atteindre. Il doit cliquer « Jouer dans ce salon ».";
+
 // Details and advice shown in a player's menu.
 function linkNotes(m) {
   const ping = m.latency_ms === "-" ? "–" : Math.round(parseFloat(m.latency_ms)) + " ms";
@@ -234,6 +241,18 @@ function myNetText(st) {
   return null;
 }
 
+// Double-click on a salon: play in it, connecting it if needed. Nothing on
+// the salon already in game mode (it never leaves game mode).
+async function playHere(x) {
+  const s = state.settings;
+  const on = s.connected.includes(x.id);
+  if (x.deleted || x.pending || (on && s.game_salon === x.id)) return;
+  select(x.id);
+  // Game mode first: the salon is then joined once, directly in game mode.
+  if (s.game_salon !== x.id) await invoke("set_game", { id: x.id });
+  if (!on) await act(invoke("connect_salon", { id: x.id }));
+}
+
 function select(id) {
   selected = id;
   delete unread[id];
@@ -275,7 +294,7 @@ function render(s) {
       const b = el("button", "salon");
       if (x.id === selected) b.classList.add("selected");
       if (x.deleted) b.classList.add("deleted");
-      b.title = x.name;
+      b.title = x.deleted || x.pending ? x.name : t("{name}\nDouble-clic : jouer dans ce salon", { name: x.name });
       const icon = el("span", "icon");
       icon.append(avatarEl(x.avatar, "lg square", x.name));
       if (connected.has(x.id) && s.phase === "on") icon.append(el("span", "dot"));
@@ -286,6 +305,7 @@ function render(s) {
       if (x.pending) b.append(el("span", "badge wait", t("en attente")));
       if (x.knocks.length) b.append(el("span", "unread", String(x.knocks.length)));
       b.onclick = () => select(x.id);
+      b.ondblclick = () => playHere(x);
       const li = el("li");
       li.append(b);
       return li;
@@ -359,6 +379,7 @@ function render(s) {
         : el("span", "ping " + quality(m), m.latency_ms === "-" ? "–" : `${Math.round(parseFloat(m.latency_ms))} ms`);
       const sub = el("span", "player-sub", me ? t("vous · {vip}", { vip: m.vip }) : `${m.vip} · ${pathLabel(m, true)}`);
       if (!me && !m.chat) sub.prepend(el("span", "waiting", "chat… · "));
+      if (!me && notPlaying(cur, m)) sub.append(el("span", "nogame", t(" · pas en mode jeu")));
       if (!me && lossOf(m) >= 1) sub.append(el("span", lossOf(m) >= 5 ? "loss bad" : "loss", t(" · perte {loss} %", { loss: lossOf(m) })));
       const main = el("span", "player-main", m.name);
       const role = roleOf(cur, m.id);
@@ -473,7 +494,11 @@ function renderGameTest() {
   $("gt-salon").textContent = `· ${cur.name}`;
   const test = state.statuses[cur.id]?.game_test;
   const running = !test || test.running;
-  const rows = test?.results || [];
+  const all = test?.results || [];
+  // Members not in game mode cannot answer: shown apart, not as failures.
+  const members = state.statuses[cur.id]?.members || [];
+  const away = all.filter((r) => { const m = members.find((x) => x.id === r.id); return m && notPlaying(cur, m); });
+  const rows = all.filter((r) => !away.includes(r));
   const cell = (ok, text) => el("td", ok ? "ok" : running ? "wait" : "ko", ok ? text : running ? "…" : "✗");
   $("gt-rows").replaceChildren(
     ...rows.map((r) => {
@@ -486,9 +511,16 @@ function renderGameTest() {
         cell(r.global, "✓"),
       );
       return tr;
+    }),
+    ...away.map((r) => {
+      const tr = el("tr", "nogame");
+      const td = el("td", "", t("pas en mode jeu dans ce salon"));
+      td.colSpan = 4;
+      tr.append(el("td", "", r.name || r.id), td);
+      return tr;
     })
   );
-  $("gt-empty").hidden = running || rows.length > 0 || !!test?.error;
+  $("gt-empty").hidden = running || all.length > 0 || !!test?.error;
   $("gt-running").hidden = !running;
   $("gt-again").disabled = running;
   let hint = test?.error ? t("Test impossible : {err}.", { err: test.error }) : "";
@@ -502,6 +534,10 @@ function renderGameTest() {
     else if (noAuto.length) hint = t("Les jeux où l'on choisit son IP (comme Burnout) verront les parties. Ceux qui ne laissent pas choisir risquent de ne pas les voir.") + rivals;
     else if (noBound.length) hint = t("Les jeux qui ne laissent pas choisir l'IP verront les parties. Dans ceux où l'on choisit son IP, rejoignez l'hôte par son IP si sa partie n'apparaît pas.");
     else hint = t("Tout est bon : le jeu verra les autres joueurs comme sur un réseau local.");
+  }
+  if (!running && away.length) {
+    const list = away.map((r) => r.name || r.id).join(", ");
+    hint = (hint ? hint + " " : "") + t("Pas en mode jeu dans ce salon : {list}. Ils doivent cliquer « Jouer dans ce salon » pour que le jeu les voie.", { list });
   }
   if (test?.relayed != null) hint += t(" (Annonces de jeux relayées depuis ce PC : {n}.)", { n: test.relayed });
   $("gt-hint").textContent = hint;
@@ -559,7 +595,8 @@ function playerMenu(event, salon, m, me) {
     for (const x of warn.bannedIn) items.push({ title: t("⛔ Banni de « {name} »", { name: x.name }) });
     if (warn.noob) items.push({ title: t("Noob : rencontré il y a moins de 3 jours") });
     items.push(...linkNotes(m));
-    if (state.settings.debug) {
+    if (notPlaying(salon, m)) items.push({ note: t(NOT_PLAYING_NOTE, { name: m.name }), warn: true });
+    if (state.settings.debug && !notPlaying(salon, m)) {
       items.push({ ping: () => state.statuses[salon.id]?.members.find((x) => x.id === m.id)?.ping });
     }
   }

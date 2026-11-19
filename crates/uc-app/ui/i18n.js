@@ -112,6 +112,13 @@ const EN = {
   "Copié : {text}": "Copied: {text}",
   "direct (NAT percé)": "direct (NAT punched)",
   "relayé par {name}": "relayed by {name}",
+  " · pas en mode jeu": " · not in game mode",
+  "{name}\nDouble-clic : jouer dans ce salon": "{name}\nDouble-click: play in this room",
+  "pas en mode jeu dans ce salon": "not in game mode in this room",
+  "{name} n'est pas en mode jeu dans ce salon (« Chat seulement ») : les jeux ne le verront pas, et le test du réseau de jeu ne peut pas l'atteindre. Il doit cliquer « Jouer dans ce salon ».":
+    "{name} is not in game mode in this room (\"Chat only\"): games will not see them, and the game network test cannot reach them. They need to click \"Play in this room\".",
+  "Pas en mode jeu dans ce salon : {list}. Ils doivent cliquer « Jouer dans ce salon » pour que le jeu les voie.":
+    "Not in game mode in this room: {list}. They need to click \"Play in this room\" for the game to see them.",
   "relayé": "relayed",
   "{path} · ping {ping} · perte {loss} %": "{path} · ping {ping} · loss {loss}%",
   "Le trafic passe par {name}": "Traffic goes through {name}",

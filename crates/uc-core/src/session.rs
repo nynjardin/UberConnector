@@ -113,6 +113,9 @@ pub struct Member {
     /// Ping measured through the virtual adapter (game mode only).
     #[serde(default)]
     pub ping: Option<crate::gametest::PingStats>,
+    /// In game mode in this salon (None: unknown, version <= 0.2.5).
+    #[serde(default)]
+    pub game: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -557,12 +560,21 @@ async fn run(
     }
     // Same socket, another server: a different public port means a
     // symmetric NAT (hole punching fails unless the other side is open).
+    // UC_TEST_NAT=cone|symmetric pretends (birthday punching tests).
+    let mut my_nat: Option<&'static str> = None;
     if let (Some(a), Ok(b)) = (public_punch, punch::stun(&sock, &STUN_SERVERS[1..]).await) {
-        status.send_modify(|s| s.nat = if a == b { "cone" } else { "symmetric" }.into());
-        let nat = if a == b {
+        let forced = std::env::var("UC_TEST_NAT").ok();
+        let sym = match forced.as_deref() {
+            Some("symmetric") => true,
+            Some("cone") => false,
+            _ => a != b,
+        };
+        my_nat = Some(if sym { "symmetric" } else { "cone" });
+        status.send_modify(|s| s.nat = my_nat.unwrap_or_default().into());
+        let nat = if !sym {
             "NAT de type cône : le perçage est possible".to_string()
         } else {
-            format!("NAT SYMÉTRIQUE ({a} puis {b}) : le perçage échouera avec la plupart des autres joueurs, un relais sera nécessaire")
+            format!("NAT SYMÉTRIQUE ({a} puis {b}) : perçage direct seulement avec les joueurs derrière un NAT cône (tentative « anniversaire »), relais sinon")
         };
         ev(nat.clone());
         status.send_modify(|s| s.timings.push(format!("        {nat}")));
@@ -739,6 +751,7 @@ async fn run(
 
     let (punch_tx, mut punch_rx) = mpsc::unbounded_channel();
     let puncher = Puncher::new(sock, &ident.id, lan_ip, et_port, cfg.use_lan, punch_tx);
+    puncher.set_nat(my_nat.map(|n| n == "symmetric"));
     let _stop_punch = OnDrop({
         let p = puncher.clone();
         move || p.stop()
@@ -789,6 +802,8 @@ async fn run(
         punch_lan: cfg.use_lan.then(|| puncher.lan_addr()),
         direct: direct_for(port_map.as_ref()),
         chat_port: chat.port(),
+        game: Some(cfg.game && !easytier::test_no_tun()),
+        nat: my_nat.map(String::from),
     };
     // The DHT task publishes the latest one.
     let (direct_tx, direct_rx) = watch::channel(my_record.direct.clone());
@@ -966,6 +981,7 @@ async fn run(
                 crate::nostr::RvEvent::Record(r, relay) => {
                     let _ = pushed_tx.send(Disc::Pushed(r, relay.trim_start_matches("wss://").to_string()));
                 }
+                crate::nostr::RvEvent::Punch(id, birthday) => puncher.punch_now(&id, birthday),
             },
             Some(e) = tr_rx.recv() => match e {
                 crate::tracker::TrEvent::Ready(host) => {
@@ -1096,6 +1112,15 @@ async fn run(
                         let _ = pushed_tx.send(Disc::Introduced(rec, from));
                         continue;
                     }
+                    // Without Nostr, both sides still probe, just not together.
+                    PunchEvent::Sync { id, birthday } => {
+                        if let Some(rv) = &rendezvous {
+                            let what = if birthday { "tentative « anniversaire »" } else { "perçage simultané" };
+                            tracing::info!("perçage : demande de {what} envoyée à {} via Nostr", id.get(..8).unwrap_or(&id));
+                            rv.punch(&id, birthday);
+                        }
+                        continue;
+                    }
                 };
                 let Some(p) = peers.get_mut(&id) else { continue };
                 ev(format!("NAT percé avec {} via {remote}", p.rec.name));
@@ -1182,6 +1207,12 @@ async fn run(
                         .filter(|e| e.cost != "Local")
                         .filter_map(|e| e.hostname.rsplit_once('~').map(|(_, id)| id.to_string()))
                         .collect();
+                    puncher.set_easytier_direct(
+                        list.iter()
+                            .filter(|e| e.cost == "p2p")
+                            .filter_map(|e| e.hostname.rsplit_once('~').map(|(_, id)| id.to_string()))
+                            .collect(),
+                    );
                     for e in list.iter().filter(|e| e.cost != "Local") {
                         let name = e.hostname.rsplit_once('~').map_or(e.hostname.as_str(), |(n, _)| n);
                         if e.cost == "p2p" {
@@ -1239,7 +1270,12 @@ async fn run(
                         } else {
                             relayed_by.get(&id).cloned().unwrap_or_default()
                         };
-                        Member { id, chat: chat_up, name, avatar, vip: e.ipv4, latency_ms: e.lat_ms, loss: e.loss_rate, path, nat: e.nat_type, relay_via, ping: None }
+                        let game = match (e.cost.as_str(), peer) {
+                            ("Local", _) => Some(cfg.game && !easytier::test_no_tun()),
+                            (_, Some(p)) => p.rec.game,
+                            _ => None,
+                        };
+                        Member { id, chat: chat_up, name, avatar, vip: e.ipv4, latency_ms: e.lat_ms, loss: e.loss_rate, path, nat: e.nat_type, relay_via, ping: None, game }
                     }).collect::<Vec<_>>();
                     let members = without_ghosts(members, &ident.id);
                     // Relaying member: by id above, shown by its live name.

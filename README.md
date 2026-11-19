@@ -107,6 +107,9 @@ checked after download. The update keeps the user's `uc-data`.
 - `UC_NO_DIRECT=1`: no direct address in our record, so EasyTier can only
   link through the punched path (with `uc-helper … --no-port-map`, which
   opens no router port).
+- `UC_TEST_NAT=symmetric` (or `cone`): pretends our NAT is of that type,
+  to see birthday punching start (it cannot succeed between two engines
+  behind the same router, which does not send packets back to itself).
 - `UC_ET_LOG=info`: EasyTier's log file at info level (very verbose).
 - `UC_UPDATE_API`: another address instead of GitHub's release API (for
   testing updates against a local server).
